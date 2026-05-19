@@ -1,0 +1,22 @@
+{
+  "name": "easm-frontend-v2",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev":   "vite --host 0.0.0.0 --port 3001",
+    "build": "vite build",
+    "lint":  "eslint src --ext .js,.jsx"
+  },
+  "dependencies": {
+    "react":            "^18.3.1",
+    "react-dom":        "^18.3.1",
+    "react-router-dom": "^6.23.1",
+    "axios":            "^1.7.2"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-react": "^4.3.1",
+    "vite":                 "^5.3.4",
+    "eslint":               "^9.7.0"
+  }
+}

@@ -30,6 +30,11 @@ class ErrorBoundary extends Component {
   }
 }
 
+// Redirect to v2 before any React renders if the user prefers it.
+if (localStorage.getItem("easm_ui") === "v2") {
+  window.location.replace("/v2/");
+}
+
 export default function App() {
   const [authed,   setAuthed]   = useState(!!getToken());
   const [tenantId, setTenantId] = useState(() => getTenantId());
