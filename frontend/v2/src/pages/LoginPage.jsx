@@ -1,6 +1,6 @@
 import { useState, useEffect } from "react";
 import { Shield } from "lucide-react";
-import { T } from "../theme";
+import { T, alpha } from "../theme";
 import { saveToken, saveTenantId } from "../api/client";
 
 const inp = {
@@ -97,7 +97,7 @@ export default function LoginPage({ onLogin }) {
       <style>{`
         @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;600;700&display=swap');
         *, *::before, *::after { box-sizing: border-box; }
-        input:focus { border-color: ${T.accent} !important; box-shadow: 0 0 0 2px ${T.accent}20; }
+        input:focus { border-color: var(--accent) !important; box-shadow: 0 0 0 2px color-mix(in oklch, var(--accent) 13%, transparent); }
         @keyframes fadeIn { from{opacity:0;transform:translateY(12px)} to{opacity:1;transform:none} }
       `}</style>
 
@@ -132,8 +132,8 @@ export default function LoginPage({ onLogin }) {
           <>
             <div style={{
               display: "flex", gap: 10, alignItems: "flex-start", marginBottom: 24,
-              padding: "12px 14px", background: `${T.accent}10`,
-              border: `1px solid ${T.accent}30`, borderRadius: 6,
+              padding: "12px 14px", background: alpha(T.accent, 6),
+              border: `1px solid ${alpha(T.accent, 19)}`, borderRadius: 6,
             }}>
               <div style={{ marginTop: 1 }}>
                 <div style={{ fontFamily: T.fontSans, fontSize: 12, fontWeight: 600, color: T.accent }}>Ersteinrichtung</div>

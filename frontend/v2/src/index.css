@@ -1,0 +1,123 @@
+@import url('https://fonts.googleapis.com/css2?family=Geist:wght@300;400;500;600;700&family=Geist+Mono:wght@400;500;600;700&display=swap');
+
+/* ── Dark (default) ─────────────────────────────────────────────────────── */
+:root,
+[data-theme="dark"] {
+  color-scheme: dark;
+
+  --background:   oklch(0 0 0);
+  --bg-1:         oklch(0.08 0 0);
+  --card:         oklch(0.14 0 0);
+  --card-2:       oklch(0.10 0 0);
+  --popover:      oklch(0.18 0 0);
+  --secondary:    oklch(0.25 0 0);
+  --muted:        oklch(0.23 0 0);
+
+  --foreground:        oklch(1 0 0);
+  --text-primary:      oklch(0.92 0 0);
+  --muted-foreground:  oklch(0.72 0 0);
+  --text-muted:        oklch(0.55 0 0);
+  --text-faint:        oklch(0.35 0 0);
+
+  --border:        oklch(0.22 0 0);
+  --border-strong: oklch(0.30 0 0);
+  --border-focus:  color-mix(in oklch, var(--accent) 40%, transparent);
+
+  --accent:     oklch(0.72 0.20 142);
+  --accent-dim: oklch(0.52 0.18 142);
+  --accent-bg:  oklch(0.14 0.04 142);
+
+  /* Severity — Tailwind oklch equivalents */
+  --sev-critical:        oklch(0.637 0.237 25.331);
+  --sev-critical-bg:     oklch(0.11 0.04 25);
+  --sev-critical-border: oklch(0.25 0.09 25);
+  --sev-high:            oklch(0.705 0.213 47.604);
+  --sev-high-bg:         oklch(0.11 0.04 47);
+  --sev-high-border:     oklch(0.26 0.08 47);
+  --sev-medium:          oklch(0.795 0.184 86.047);
+  --sev-medium-bg:       oklch(0.12 0.04 86);
+  --sev-medium-border:   oklch(0.29 0.08 86);
+  --sev-low:             oklch(0.623 0.214 259.815);
+  --sev-low-bg:          oklch(0.11 0.03 260);
+  --sev-low-border:      oklch(0.24 0.07 260);
+  --sev-info:            oklch(0.556 0.003 286.375);
+  --sev-info-bg:         oklch(0.12 0 0);
+  --sev-info-border:     oklch(0.22 0 0);
+
+  --font-sans: Geist, ui-sans-serif, system-ui, sans-serif;
+  --font-mono: 'Geist Mono', ui-monospace, 'JetBrains Mono', monospace;
+  --radius: 0.5rem;
+}
+
+/* ── Light ──────────────────────────────────────────────────────────────── */
+[data-theme="light"] {
+  color-scheme: light;
+
+  --background: oklch(0.99 0 0);
+  --bg-1:       oklch(0.96 0 0);
+  --card:       oklch(1 0 0);
+  --card-2:     oklch(0.97 0 0);
+  --popover:    oklch(1 0 0);
+  --secondary:  oklch(0.94 0 0);
+  --muted:      oklch(0.97 0 0);
+
+  --foreground:       oklch(0 0 0);
+  --text-primary:     oklch(0.10 0 0);
+  --muted-foreground: oklch(0.44 0 0);
+  --text-muted:       oklch(0.55 0 0);
+  --text-faint:       oklch(0.68 0 0);
+
+  --border:        oklch(0.92 0 0);
+  --border-strong: oklch(0.84 0 0);
+  --border-focus:  color-mix(in oklch, var(--accent) 50%, transparent);
+
+  --accent:     oklch(0.52 0.18 142);
+  --accent-dim: oklch(0.42 0.14 142);
+  --accent-bg:  oklch(0.93 0.04 142);
+
+  --sev-critical:        oklch(0.637 0.237 25.331);
+  --sev-critical-bg:     oklch(0.96 0.02 25);
+  --sev-critical-border: oklch(0.88 0.05 25);
+  --sev-high:            oklch(0.705 0.213 47.604);
+  --sev-high-bg:         oklch(0.96 0.02 47);
+  --sev-high-border:     oklch(0.88 0.05 47);
+  --sev-medium:          oklch(0.60 0.16 86.047);
+  --sev-medium-bg:       oklch(0.96 0.03 86);
+  --sev-medium-border:   oklch(0.86 0.06 86);
+  --sev-low:             oklch(0.55 0.18 259.815);
+  --sev-low-bg:          oklch(0.95 0.02 260);
+  --sev-low-border:      oklch(0.87 0.05 260);
+  --sev-info:            oklch(0.45 0.003 286.375);
+  --sev-info-bg:         oklch(0.95 0 0);
+  --sev-info-border:     oklch(0.88 0 0);
+}
+
+/* ── Base resets ────────────────────────────────────────────────────────── */
+*,
+*::before,
+*::after { box-sizing: border-box; }
+
+html { font-family: var(--font-sans); }
+
+body {
+  margin: 0;
+  background: var(--background);
+  color: var(--foreground);
+  font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+}
+
+::-webkit-scrollbar              { width: 5px; height: 5px; }
+::-webkit-scrollbar-track        { background: transparent; }
+::-webkit-scrollbar-thumb        { background: var(--border); border-radius: 3px; }
+::-webkit-scrollbar-thumb:hover  { background: var(--border-strong); }
+
+::placeholder { color: var(--text-faint); }
+
+input[type=checkbox] { accent-color: var(--accent); }
+
+/* ── Shared keyframes ───────────────────────────────────────────────────── */
+@keyframes pulse   { 0%,100%{opacity:1} 50%{opacity:0.4} }
+@keyframes fadeIn  { from{opacity:0;transform:translateY(4px)} to{opacity:1;transform:none} }
+@keyframes slideIn { from{opacity:0;transform:translateX(8px)} to{opacity:1;transform:none} }
+@keyframes spin    { from{transform:rotate(0deg)} to{transform:rotate(360deg)} }

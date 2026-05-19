@@ -3,26 +3,27 @@ import { Outlet, useLocation, useNavigate } from "react-router-dom";
 import {
   LayoutDashboard, AlertTriangle, Globe, Cpu, Radar,
   RefreshCw, Settings, LogOut, Shield, ChevronLeft,
-  ChevronRight, ArrowLeft, Zap,
+  ChevronRight, ArrowLeft, Zap, Sun, Moon,
 } from "lucide-react";
 import { toast } from "sonner";
-import { T } from "../../theme";
+import { T, alpha } from "../../theme";
 import { useApp } from "../../context/AppContext";
 import { clearToken, clearTenantId } from "../../api/client";
+import { useTheme } from "../../hooks/useTheme";
 import { Spinner } from "../ui/index";
 
 const NAV_ITEMS = [
-  { path: "/dashboard", label: "Dashboard",    Icon: LayoutDashboard                       },
-  { path: "/findings",  label: "Findings",     Icon: AlertTriangle, countKey: "findings"  },
-  { path: "/assets",    label: "Assets",       Icon: Globe,         countKey: "assets"    },
+  { path: "/dashboard", label: "Dashboard",    Icon: LayoutDashboard                      },
+  { path: "/findings",  label: "Findings",     Icon: AlertTriangle, countKey: "findings" },
+  { path: "/assets",    label: "Assets",       Icon: Globe,         countKey: "assets"   },
   { path: "/mcp",       label: "MCP Exposure", Icon: Cpu,           countKey: "mcp", alert: true },
-  { path: "/intel",     label: "Intelligence", Icon: Radar                                 },
-  { path: "/scans",     label: "Scans",        Icon: RefreshCw                             },
+  { path: "/intel",     label: "Intelligence", Icon: Radar                                },
+  { path: "/scans",     label: "Scans",        Icon: RefreshCw                            },
 ];
 
 function NavItem({ item, active, collapsed, counts }) {
   const navigate = useNavigate();
-  const count = item.countKey ? (counts[item.countKey] ?? 0) : null;
+  const count    = item.countKey ? (counts[item.countKey] ?? 0) : null;
   const hasAlert = item.alert && count > 0;
 
   return (
@@ -33,7 +34,7 @@ function NavItem({ item, active, collapsed, counts }) {
         display: "flex", alignItems: "center", gap: 10, width: "100%",
         padding: collapsed ? "9px 0" : "9px 12px",
         justifyContent: collapsed ? "center" : "flex-start",
-        background: active ? `${T.accent}12` : "transparent",
+        background: active ? alpha(T.accent, 7) : "transparent",
         border: "none",
         borderLeft: `2px solid ${active ? T.accent : "transparent"}`,
         borderRadius: 6,
@@ -51,9 +52,9 @@ function NavItem({ item, active, collapsed, counts }) {
           {count !== null && count > 0 && (
             <span style={{
               fontFamily: T.font, fontSize: 9, fontWeight: 700,
-              background: hasAlert ? `${T.critical}20` : T.bg4,
-              color: hasAlert ? T.critical : T.text3,
-              border: `1px solid ${hasAlert ? `${T.critical}40` : T.border}`,
+              background: hasAlert ? alpha(T.critical, 13) : T.bg4,
+              color:      hasAlert ? T.critical : T.text3,
+              border:    `1px solid ${hasAlert ? alpha(T.critical, 25) : T.border}`,
               padding: "1px 7px", borderRadius: 999, flexShrink: 0,
             }}>{count}</span>
           )}
@@ -66,6 +67,7 @@ function NavItem({ item, active, collapsed, counts }) {
 export default function Shell() {
   const [collapsed, setCollapsed] = useState(false);
   const location  = useLocation();
+  const { theme, toggle: toggleTheme, isDark } = useTheme();
   const { tenant, findings, assets, mcp, loading, triggerScan } = useApp();
 
   const counts = {
@@ -88,21 +90,6 @@ export default function Shell() {
 
   return (
     <div style={{ display: "flex", minHeight: "100vh", background: T.bg0 }}>
-      <style>{`
-        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500;600;700&display=swap');
-        *, *::before, *::after { box-sizing: border-box; }
-        ::-webkit-scrollbar { width: 5px; height: 5px; }
-        ::-webkit-scrollbar-track { background: transparent; }
-        ::-webkit-scrollbar-thumb { background: ${T.border}; border-radius: 3px; }
-        ::-webkit-scrollbar-thumb:hover { background: ${T.border2}; }
-        ::placeholder { color: ${T.text3}; }
-        input[type=checkbox] { accent-color: ${T.accent}; }
-        @keyframes pulse    { 0%,100%{opacity:1} 50%{opacity:0.4} }
-        @keyframes fadeIn   { from{opacity:0;transform:translateY(4px)} to{opacity:1;transform:none} }
-        @keyframes spin     { from{transform:rotate(0deg)} to{transform:rotate(360deg)} }
-        @keyframes slideIn  { from{opacity:0;transform:translateX(8px)} to{opacity:1;transform:none} }
-      `}</style>
-
       {/* ── Sidebar ── */}
       <aside style={{
         width: collapsed ? 56 : 232, flexShrink: 0,
@@ -120,10 +107,10 @@ export default function Shell() {
         }}>
           <div style={{
             width: 28, height: 28, borderRadius: 6, flexShrink: 0,
-            background: "linear-gradient(135deg, #22c55e, #15803d)",
+            background: "linear-gradient(135deg, var(--accent), var(--accent-dim))",
             display: "flex", alignItems: "center", justifyContent: "center",
           }}>
-            <Shield size={15} color={T.bg0} strokeWidth={2.5} />
+            <Shield size={15} color="var(--background)" strokeWidth={2.5} />
           </div>
           {!collapsed && (
             <div>
@@ -146,7 +133,7 @@ export default function Shell() {
           ))}
         </nav>
 
-        {/* Bottom: settings + collapse */}
+        {/* Bottom: settings + theme toggle + collapse */}
         <div style={{
           padding: collapsed ? "12px 4px" : "12px 0 12px 12px",
           borderTop: `1px solid ${T.border}`, flexShrink: 0,
@@ -157,12 +144,31 @@ export default function Shell() {
             collapsed={collapsed}
             counts={counts}
           />
+
+          {/* Theme toggle */}
+          <button
+            onClick={toggleTheme}
+            title={isDark ? "Light Mode" : "Dark Mode"}
+            style={{
+              display: "flex", alignItems: "center", justifyContent: "center", gap: 6,
+              width: collapsed ? 36 : "calc(100% - 12px)", margin: collapsed ? "4px auto 0" : "4px 12px 0 0",
+              padding: "7px", background: "transparent", border: `1px solid ${T.border}`,
+              borderRadius: 6, color: T.text3, cursor: "pointer", transition: "all 0.12s",
+              fontFamily: T.fontSans, fontSize: 11,
+            }}
+            onMouseEnter={e => { e.currentTarget.style.borderColor = T.border2; e.currentTarget.style.color = T.text2; }}
+            onMouseLeave={e => { e.currentTarget.style.borderColor = T.border; e.currentTarget.style.color = T.text3; }}
+          >
+            {isDark ? <Sun size={13} /> : <Moon size={13} />}
+            {!collapsed && <span>{isDark ? "Light" : "Dark"}</span>}
+          </button>
+
           <button
             onClick={() => setCollapsed(c => !c)}
             title={collapsed ? "Ausklappen" : "Einklappen"}
             style={{
               display: "flex", alignItems: "center", justifyContent: "center",
-              width: collapsed ? 36 : "calc(100% - 12px)", margin: collapsed ? "6px auto 0" : "6px 12px 0 0",
+              width: collapsed ? 36 : "calc(100% - 12px)", margin: collapsed ? "4px auto 0" : "4px 12px 0 0",
               padding: 7, background: "transparent", border: `1px solid ${T.border}`,
               borderRadius: 6, color: T.text3, cursor: "pointer", transition: "all 0.12s",
             }}
@@ -198,9 +204,10 @@ export default function Shell() {
             </span>
           </div>
 
-          {/* Score */}
+          {/* Score badge */}
           <div style={{
-            background: `${scoreColor}12`, border: `1px solid ${scoreColor}30`,
+            background: alpha(scoreColor, 7),
+            border: `1px solid ${alpha(scoreColor, 19)}`,
             borderRadius: 6, padding: "5px 10px",
             fontFamily: T.font, fontSize: 11, color: scoreColor, fontWeight: 700,
           }}>
@@ -208,7 +215,6 @@ export default function Shell() {
           </div>
 
           {loading && <Spinner size={16} />}
-
           <div style={{ flex: 1 }} />
 
           {/* Scan */}
@@ -216,7 +222,7 @@ export default function Shell() {
             display: "flex", alignItems: "center", gap: 6,
             background: T.accent, border: "none", borderRadius: 6,
             padding: "7px 14px", fontFamily: T.font, fontSize: 11, fontWeight: 700,
-            color: "#052e16", cursor: "pointer", letterSpacing: "0.04em",
+            color: "var(--background)", cursor: "pointer", letterSpacing: "0.04em",
           }}>
             <Zap size={12} />SCAN NOW
           </button>

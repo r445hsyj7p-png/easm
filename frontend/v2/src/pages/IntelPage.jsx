@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { MapContainer, TileLayer, CircleMarker, Popup } from "react-leaflet";
 import "leaflet/dist/leaflet.css";
-import { T, SEV, SEV_ORDER } from "../theme";
+import { T, SEV, SEV_ORDER, alpha } from "../theme";
 import { Card, CardHeader, TH, TD, SevBadge, EmptyState, PageLoading, SearchInput, FilterPill } from "../components/ui/index";
 import { useApp } from "../context/AppContext";
 
@@ -301,7 +301,7 @@ function DnsTab({ intel }) {
                 }}>
                   <span style={{
                     fontFamily: T.font, fontSize: 9, fontWeight: 700, color: T.accent,
-                    background: T.accent3, border: `1px solid ${T.accent}30`,
+                    background: T.accent3, border: `1px solid ${alpha(T.accent, 19)}`,
                     padding: "1px 7px", borderRadius: 3, minWidth: 48, textAlign: "center",
                   }}>{type}</span>
                   {records.length === 0 && (

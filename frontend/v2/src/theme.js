@@ -1,18 +1,65 @@
+/* CSS custom property references — resolved at paint time by the browser.
+   Components use inline styles; values work with both dark and light theme. */
+
 export const T = {
-  bg0: "#050810", bg1: "#080c18", bg2: "#0d1221",
-  bg3: "#121929", bg4: "#172131", bg5: "#1d2a3d",
-  border: "#1e2d45", border2: "#253554", borderFocus: "#22c55e",
-  accent: "#22c55e", accent2: "#16a34a", accent3: "#0f3d20",
-  critical: "#f43f5e", criticalBg: "#1c0810", criticalBorder: "#7f1d1d",
-  high: "#f97316",    highBg: "#1c0e00",     highBorder: "#7c2d12",
-  medium: "#eab308",  mediumBg: "#1a1400",   mediumBorder: "#713f12",
-  low: "#60a5fa",     lowBg: "#00111e",      lowBorder: "#1e3a5f",
-  info: "#94a3b8",    infoBg: "#0d1221",     infoBorder: "#1e2d45",
-  text0: "#f1f5f9", text1: "#cbd5e1", text2: "#94a3b8", text3: "#475569", text4: "#273548",
-  font:     "'JetBrains Mono', 'Fira Code', monospace",
-  fontSans: "'Inter', 'IBM Plex Sans', system-ui, sans-serif",
-  red: "#f43f5e", green: "#22c55e",
+  /* backgrounds */
+  bg0: "var(--background)",
+  bg1: "var(--bg-1)",
+  bg2: "var(--card)",
+  bg3: "var(--secondary)",
+  bg4: "var(--muted)",
+  bg5: "var(--popover)",
+
+  /* borders */
+  border:      "var(--border)",
+  border2:     "var(--border-strong)",
+  borderFocus: "var(--border-focus)",
+
+  /* accent (green) */
+  accent:  "var(--accent)",
+  accent2: "var(--accent-dim)",
+  accent3: "var(--accent-bg)",
+
+  /* severity foreground */
+  critical: "var(--sev-critical)",
+  high:     "var(--sev-high)",
+  medium:   "var(--sev-medium)",
+  low:      "var(--sev-low)",
+  info:     "var(--sev-info)",
+
+  /* severity background + border */
+  criticalBg:     "var(--sev-critical-bg)",
+  criticalBorder: "var(--sev-critical-border)",
+  highBg:         "var(--sev-high-bg)",
+  highBorder:     "var(--sev-high-border)",
+  mediumBg:       "var(--sev-medium-bg)",
+  mediumBorder:   "var(--sev-medium-border)",
+  lowBg:          "var(--sev-low-bg)",
+  lowBorder:      "var(--sev-low-border)",
+  infoBg:         "var(--sev-info-bg)",
+  infoBorder:     "var(--sev-info-border)",
+
+  /* text scale */
+  text0: "var(--foreground)",
+  text1: "var(--text-primary)",
+  text2: "var(--muted-foreground)",
+  text3: "var(--text-muted)",
+  text4: "var(--text-faint)",
+
+  /* typography */
+  font:     "var(--font-mono)",
+  fontSans: "var(--font-sans)",
+
+  /* aliases */
+  red:   "var(--sev-critical)",
+  green: "var(--accent)",
 };
+
+/* alpha() — inline-style-safe alpha compositing via color-mix.
+   Supported: Chrome 111+, Firefox 113+, Safari 16.2+.
+   Works with any colorVar, including other CSS custom properties. */
+export const alpha = (colorVar, percent) =>
+  `color-mix(in oklch, ${colorVar} ${percent}%, transparent)`;
 
 export const SEV = {
   CRITICAL: { color: T.critical, bg: T.criticalBg, border: T.criticalBorder },

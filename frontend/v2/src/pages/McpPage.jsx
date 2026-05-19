@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { Cpu, AlertTriangle } from "lucide-react";
-import { T, SEV } from "../theme";
+import { T, SEV, alpha } from "../theme";
 import { KpiCard, Card, CardHeader, TH, TD, SevBadge, EmptyState, PageLoading, SearchInput } from "../components/ui/index";
 import { useApp } from "../context/AppContext";
 
@@ -135,7 +135,7 @@ export default function McpPage() {
                           ) : s.auth_required === true ? (
                             <span style={{
                               fontFamily: T.font, fontSize: 10, color: T.accent,
-                              background: T.accent3, border: `1px solid ${T.accent}30`,
+                              background: T.accent3, border: `1px solid ${alpha(T.accent, 19)}`,
                               padding: "1px 7px", borderRadius: 3,
                             }}>AUTH</span>
                           ) : (

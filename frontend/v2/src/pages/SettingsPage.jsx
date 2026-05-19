@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { toast } from "sonner";
 import { Settings, Globe, Shield, Calendar, RefreshCw, Key } from "lucide-react";
-import { T } from "../theme";
+import { T, alpha } from "../theme";
 import { Card, CardHeader, KpiCard, PageLoading, Btn } from "../components/ui/index";
 import { useApp } from "../context/AppContext";
 import { apiFetch } from "../api/client";
@@ -91,7 +91,7 @@ export default function SettingsPage() {
               onKeyDown={e => e.key === "Enter" && handleSaveDomain()}
               placeholder="z.B. beispiel.de"
               style={{
-                background: T.bg3, border: `1px solid ${T.accent}60`, borderRadius: 6,
+                background: T.bg3, border: T.borderFocus, borderRadius: 6,
                 padding: "8px 12px", fontFamily: T.font, fontSize: 12, color: T.text0,
                 outline: "none", width: 280,
               }}
@@ -113,7 +113,7 @@ export default function SettingsPage() {
               value={schedule}
               onChange={e => setSchedule(e.target.value)}
               style={{
-                background: T.bg3, border: `1px solid ${T.accent}60`, borderRadius: 6,
+                background: T.bg3, border: T.borderFocus, borderRadius: 6,
                 padding: "8px 12px", fontFamily: T.fontSans, fontSize: 12, color: T.text0,
                 outline: "none", width: 220, cursor: "pointer",
               }}
