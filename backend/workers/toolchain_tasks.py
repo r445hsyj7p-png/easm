@@ -1091,18 +1091,23 @@ def _geoip_batch(ips: list) -> dict:
     except Exception:
         return {}
 
+    # Guard: API may return an error object instead of a list on rate-limit / server error
+    if not isinstance(rows, list):
+        return {}
+
     geo_map: dict = {}
     for row in rows:
-        if row.get("status") != "success":
+        if not isinstance(row, dict) or row.get("status") != "success":
             continue
         ip = row.get("query", "")
         if not ip:
             continue
+        # Use `or 0` instead of default= to also handle explicit null values from the API
         geo_map[ip] = {
-            "city":    row.get("city", ""),
-            "country": row.get("countryCode", ""),
-            "lat":     float(row.get("lat", 0)),
-            "lng":     float(row.get("lon", 0)),
+            "city":    row.get("city") or "",
+            "country": row.get("countryCode") or "",
+            "lat":     float(row.get("lat") or 0),
+            "lng":     float(row.get("lon") or 0),
         }
     return geo_map
 
@@ -1250,6 +1255,10 @@ def _resolve_assets(fqdns: list, hosts: list) -> tuple:
         geo_map = _geoip_batch(unique_ips)
     except Exception:
         pass
+
+    logger.info(
+        f"_geoip_batch: {len(geo_map)}/{len(unique_ips)} IPs mit Geo-Daten aufgelöst"
+    )
 
     return ip_map, rdap_map, geo_map
 
