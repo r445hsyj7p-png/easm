@@ -186,9 +186,11 @@ export function SearchInput({ value, onChange, placeholder, width = 220 }) {
 /* ── Primary button ──────────────────────────────────────────────────────── */
 export function Btn({ children, onClick, variant = "default", disabled, style }) {
   const styles = {
-    primary: { background: T.accent, color: "#052e16", border: "none" },
-    danger:  { background: T.criticalBg, color: T.critical, border: `1px solid ${T.criticalBorder}` },
-    default: { background: T.bg3, color: T.text1, border: `1px solid ${T.border}` },
+    primary:   { background: T.accent, color: "var(--background)", border: "none" },
+    secondary: { background: T.bg3, color: T.text1, border: `1px solid ${T.border}` },
+    danger:    { background: T.criticalBg, color: T.critical, border: `1px solid ${T.criticalBorder}` },
+    ghost:     { background: "transparent", color: T.text2, border: `1px solid ${T.border}` },
+    default:   { background: T.bg3, color: T.text1, border: `1px solid ${T.border}` },
   };
   return (
     <button onClick={onClick} disabled={disabled} style={{

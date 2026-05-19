@@ -4,6 +4,7 @@ import {
   LayoutDashboard, AlertTriangle, Globe, Cpu, Radar,
   RefreshCw, Settings, LogOut, Shield, ChevronLeft,
   ChevronRight, ArrowLeft, Zap, Sun, Moon,
+  Target, ShieldAlert, Layers,
 } from "lucide-react";
 import { toast } from "sonner";
 import { T, alpha } from "../../theme";
@@ -13,12 +14,14 @@ import { useTheme } from "../../hooks/useTheme";
 import { Spinner } from "../ui/index";
 
 const NAV_ITEMS = [
-  { path: "/dashboard", label: "Dashboard",    Icon: LayoutDashboard                      },
-  { path: "/findings",  label: "Findings",     Icon: AlertTriangle, countKey: "findings" },
-  { path: "/assets",    label: "Assets",       Icon: Globe,         countKey: "assets"   },
-  { path: "/mcp",       label: "MCP Exposure", Icon: Cpu,           countKey: "mcp", alert: true },
-  { path: "/intel",     label: "Intelligence", Icon: Radar                                },
-  { path: "/scans",     label: "Scans",        Icon: RefreshCw                            },
+  { path: "/dashboard",       label: "Dashboard",       Icon: LayoutDashboard                      },
+  { path: "/findings",        label: "Findings",        Icon: AlertTriangle, countKey: "findings" },
+  { path: "/vulnerabilities", label: "Vulnerabilities", Icon: ShieldAlert                          },
+  { path: "/targets",         label: "Targets",         Icon: Target                               },
+  { path: "/assetsnew",       label: "Assets",          Icon: Layers,        countKey: "assets"   },
+  { path: "/mcp",             label: "MCP Exposure",    Icon: Cpu,           countKey: "mcp", alert: true },
+  { path: "/intel",           label: "Intelligence",    Icon: Radar                                },
+  { path: "/scans",           label: "Scans",           Icon: RefreshCw                            },
 ];
 
 function NavItem({ item, active, collapsed, counts }) {
@@ -126,7 +129,7 @@ export default function Shell() {
             <NavItem
               key={item.path}
               item={item}
-              active={location.pathname === item.path}
+              active={location.pathname === item.path || location.pathname.startsWith(item.path + "/")}
               collapsed={collapsed}
               counts={counts}
             />

@@ -1,361 +1,539 @@
-import { useState } from "react";
-import { MapContainer, TileLayer, CircleMarker, Popup } from "react-leaflet";
-import "leaflet/dist/leaflet.css";
-import { T, SEV, SEV_ORDER, alpha } from "../theme";
-import { Card, CardHeader, TH, TD, SevBadge, EmptyState, PageLoading, SearchInput, FilterPill } from "../components/ui/index";
+import { useState, useCallback } from "react";
+import { useParams, useNavigate } from "react-router-dom";
+import { Search, Shield, Mail, Settings2, AlertTriangle, CheckCircle, Eye, EyeOff } from "lucide-react";
+import { T, alpha } from "../theme";
+import { Card, CardHeader, EmptyState, Btn } from "../components/ui/index";
+import { apiFetch } from "../api/client";
 import { useApp } from "../context/AppContext";
+import { toast } from "sonner";
 
-const SUB_TABS = [
-  { id: "hosting",  label: "Hosting" },
-  { id: "fqdn",     label: "FQDN-Inventar" },
-  { id: "geo",      label: "Geo-Verteilung" },
-  { id: "dns",      label: "DNS & E-Mail" },
+const TABS = [
+  { id: "ip-reputation", label: "IP Reputation",  Icon: Shield   },
+  { id: "breaches",      label: "Breaches (HIBP)", Icon: Mail     },
+  { id: "feed-settings", label: "Feed Settings",   Icon: Settings2},
 ];
 
-const SEV_COLOR = { CRITICAL: T.critical, HIGH: T.high, MEDIUM: T.medium, LOW: T.low, INFO: T.info };
+const DEFAULT_FEEDS = [
+  { id: "abuseipdb",    name: "AbuseIPDB",      description: "IP reputation & abuse reports", requiresKey: true,  enabled: false, key: "" },
+  { id: "virustotal",   name: "VirusTotal",     description: "Multi-AV & URL scanner",        requiresKey: true,  enabled: false, key: "" },
+  { id: "shodan",       name: "Shodan",         description: "Internet-wide port scanner",     requiresKey: true,  enabled: false, key: "" },
+  { id: "hibp",         name: "HaveIBeenPwned", description: "Breach notification service",   requiresKey: true,  enabled: false, key: "" },
+  { id: "otx",          name: "AlienVault OTX", description: "Open threat exchange",          requiresKey: true,  enabled: false, key: "" },
+  { id: "greynoise",    name: "GreyNoise",      description: "Noise & benign scanner filter",  requiresKey: true,  enabled: false, key: "" },
+  { id: "urlhaus",      name: "URLhaus",        description: "Malicious URL feed (free)",      requiresKey: false, enabled: true,  key: "" },
+  { id: "feodo",        name: "Feodo Tracker",  description: "C2 botnet tracker (free)",       requiresKey: false, enabled: true,  key: "" },
+];
 
 export default function IntelPage() {
-  const { intel, loading } = useApp();
-  const [sub, setSub] = useState("hosting");
+  const { tab: tabParam } = useParams();
+  const navigate          = useNavigate();
+  const activeTab         = TABS.find(t => t.id === tabParam)?.id || "ip-reputation";
 
-  if (loading) return <PageLoading />;
+  const go = id => navigate(`/intel/${id}`);
 
-  const fqdnCount = (intel?.fqdn_table || []).length;
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 20 }}>
+      {/* Header */}
+      <div>
+        <div style={{ fontFamily: T.fontSans, fontSize: 18, fontWeight: 700, color: T.text0, marginBottom: 4 }}>
+          Intelligence
+        </div>
+        <div style={{ fontFamily: T.fontSans, fontSize: 12, color: T.text3 }}>
+          IP Reputation, Breach-Daten und Threat-Feed-Konfiguration
+        </div>
+      </div>
+
+      {/* Tab bar */}
+      <div style={{ display: "flex", gap: 0, borderBottom: `1px solid ${T.border}` }}>
+        {TABS.map(t => {
+          const active = activeTab === t.id;
+          return (
+            <button key={t.id} onClick={() => go(t.id)} style={{
+              display: "flex", alignItems: "center", gap: 6,
+              padding: "10px 18px", background: "transparent", border: "none",
+              borderBottom: `2px solid ${active ? T.accent : "transparent"}`,
+              fontFamily: T.fontSans, fontSize: 13, fontWeight: active ? 600 : 400,
+              color: active ? T.accent : T.text2, cursor: "pointer",
+              transition: "color 0.12s", marginBottom: -1,
+            }}>
+              <t.Icon size={13} />{t.label}
+            </button>
+          );
+        })}
+      </div>
+
+      {activeTab === "ip-reputation" && <IpReputationTab />}
+      {activeTab === "breaches"      && <BreachesTab />}
+      {activeTab === "feed-settings" && <FeedSettingsTab />}
+    </div>
+  );
+}
+
+/* ── IP Reputation ── */
+function IpReputationTab() {
+  const { tenantId } = useApp();
+  const [ip,      setIp]      = useState("");
+  const [loading, setLoading] = useState(false);
+  const [result,  setResult]  = useState(null);
+  const [error,   setError]   = useState(null);
+
+  const lookup = useCallback(async () => {
+    const target = ip.trim();
+    if (!target) return;
+    setLoading(true); setError(null); setResult(null);
+    try {
+      const data = await apiFetch(`/tenants/${tenantId}/intel/ip-reputation?ip=${encodeURIComponent(target)}`);
+      setResult(data);
+    } catch (e) {
+      setError(e.message);
+    } finally {
+      setLoading(false);
+    }
+  }, [ip, tenantId]);
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
-      {/* Sub-tabs */}
-      <div style={{ display: "flex", gap: 0, borderBottom: `1px solid ${T.border}` }}>
-        {SUB_TABS.map(t => (
-          <button key={t.id} onClick={() => setSub(t.id)} style={{
-            padding: "10px 18px", background: "transparent", border: "none",
-            borderBottom: `2px solid ${sub === t.id ? T.accent : "transparent"}`,
-            fontFamily: T.fontSans, fontSize: 13, fontWeight: sub === t.id ? 600 : 400,
-            color: sub === t.id ? T.accent : T.text2, cursor: "pointer",
-            transition: "color 0.12s", marginBottom: -1,
-          }}>
-            {t.id === "fqdn" ? `FQDN-Inventar (${fqdnCount})` : t.label}
-          </button>
-        ))}
-      </div>
-
-      {sub === "hosting" && <HostingTab intel={intel} />}
-      {sub === "fqdn"    && <FqdnTab intel={intel} />}
-      {sub === "geo"     && <GeoTab intel={intel} />}
-      {sub === "dns"     && <DnsTab intel={intel} />}
-    </div>
-  );
-}
-
-/* ── Hosting tab ───────────────────────────────────────────────────────────── */
-function HostingTab({ intel }) {
-  const orgs = intel?.hosting_orgs || [];
-
-  if (orgs.length === 0) {
-    return (
+      {/* Input */}
       <Card>
-        <EmptyState title="Keine Hosting-Daten" sub="Noch kein Scan mit RDAP-Auflösung durchgeführt." />
-      </Card>
-    );
-  }
-
-  const maxCount = Math.max(...orgs.map(o => o.count || o.asset_count || 1), 1);
-
-  return (
-    <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16 }}>
-      <Card>
-        <CardHeader title="Hosting-Provider" sub={`${orgs.length} Organisationen`} />
-        <div style={{ padding: "8px 0" }}>
-          {orgs.slice(0, 20).map((o, i) => {
-            const count   = o.count || o.asset_count || 1;
-            const pct     = (count / maxCount) * 100;
-            const riskCol = SEV_COLOR[o.risk] || T.info;
-            return (
-              <div key={i} style={{
-                display: "flex", alignItems: "center", gap: 12,
-                padding: "9px 18px", borderBottom: `1px solid ${T.border}`,
-              }}>
-                <div style={{ flex: 1, minWidth: 0 }}>
-                  <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 4 }}>
-                    <div style={{ fontFamily: T.fontSans, fontSize: 12, color: T.text0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                      {o.org || o.name || "Unbekannt"}
-                    </div>
-                    {o.asn && (
-                      <span style={{ fontFamily: T.font, fontSize: 9, color: T.text3 }}>AS{o.asn}</span>
-                    )}
-                  </div>
-                  <div style={{ height: 3, background: T.bg4, borderRadius: 2, overflow: "hidden" }}>
-                    <div style={{ width: `${pct}%`, height: "100%", background: riskCol, borderRadius: 2 }} />
-                  </div>
-                </div>
-                <div style={{ flexShrink: 0, textAlign: "right", minWidth: 48 }}>
-                  <div style={{ fontFamily: T.font, fontSize: 12, fontWeight: 700, color: riskCol }}>{count}</div>
-                  <div style={{ fontFamily: T.font, fontSize: 9, color: T.text3 }}>Assets</div>
-                </div>
-              </div>
-            );
-          })}
+        <div style={{ padding: "20px 24px" }}>
+          <div style={{ fontFamily: T.fontSans, fontSize: 13, fontWeight: 600, color: T.text0, marginBottom: 12 }}>
+            IP-Adresse nachschlagen
+          </div>
+          <div style={{ display: "flex", gap: 8 }}>
+            <input
+              value={ip}
+              onChange={e => setIp(e.target.value)}
+              onKeyDown={e => e.key === "Enter" && lookup()}
+              placeholder="z.B. 1.2.3.4"
+              style={{
+                flex: 1, padding: "9px 14px",
+                background: T.bg3, border: `1px solid ${T.border}`,
+                borderRadius: 6, fontFamily: T.font, fontSize: 12, color: T.text0,
+                outline: "none",
+              }}
+            />
+            <Btn onClick={lookup} variant="primary" disabled={loading || !ip.trim()}>
+              <Search size={12} />
+              {loading ? "Lädt…" : "Nachschlagen"}
+            </Btn>
+          </div>
+          {error && (
+            <div style={{ marginTop: 10, fontFamily: T.fontSans, fontSize: 12, color: T.critical }}>
+              {error}
+            </div>
+          )}
         </div>
       </Card>
 
-      <Card>
-        <CardHeader title="Risiko nach Provider" />
-        <div style={{ padding: "16px 20px", display: "flex", flexDirection: "column", gap: 10 }}>
-          {["CRITICAL","HIGH","MEDIUM","LOW","INFO"].map(sev => {
-            const count = orgs.filter(o => (o.risk || "INFO").toUpperCase() === sev).length;
-            return count > 0 ? (
-              <div key={sev} style={{ display: "flex", alignItems: "center", gap: 10 }}>
-                <SevBadge sev={sev} small />
-                <div style={{ flex: 1, height: 4, background: T.bg4, borderRadius: 2, overflow: "hidden" }}>
-                  <div style={{ width: `${(count/orgs.length)*100}%`, height: "100%", background: SEV_COLOR[sev] || T.info, borderRadius: 2 }} />
-                </div>
-                <span style={{ fontFamily: T.font, fontSize: 11, fontWeight: 700, color: SEV_COLOR[sev] || T.info, minWidth: 20 }}>{count}</span>
+      {result && (
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16 }}>
+          {/* AbuseIPDB panel */}
+          <Card>
+            <CardHeader title="AbuseIPDB" sub="Abuse Confidence Score" />
+            <div style={{ padding: "16px 20px" }}>
+              {result.abuseipdb ? (
+                <AbusePanel data={result.abuseipdb} />
+              ) : (
+                <div style={{ fontFamily: T.fontSans, fontSize: 12, color: T.text3 }}>Kein API-Key konfiguriert.</div>
+              )}
+            </div>
+          </Card>
+
+          {/* VirusTotal panel */}
+          <Card>
+            <CardHeader title="VirusTotal" sub="Malicious / Suspicious Votes" />
+            <div style={{ padding: "16px 20px" }}>
+              {result.virustotal ? (
+                <VtPanel data={result.virustotal} />
+              ) : (
+                <div style={{ fontFamily: T.fontSans, fontSize: 12, color: T.text3 }}>Kein API-Key konfiguriert.</div>
+              )}
+            </div>
+          </Card>
+
+          {/* Shodan / General */}
+          {result.shodan && (
+            <Card style={{ gridColumn: "1 / -1" }}>
+              <CardHeader title="Shodan" sub="Open ports & banners" />
+              <div style={{ padding: "16px 20px", display: "flex", flexWrap: "wrap", gap: 8 }}>
+                {(result.shodan.ports || []).map(p => (
+                  <span key={p} style={{
+                    fontFamily: T.font, fontSize: 10, color: T.accent,
+                    background: T.accent3, border: `1px solid ${alpha(T.accent, 25)}`,
+                    padding: "2px 8px", borderRadius: 4,
+                  }}>{p}</span>
+                ))}
+                {(!result.shodan.ports?.length) && (
+                  <span style={{ fontFamily: T.fontSans, fontSize: 12, color: T.text3 }}>Keine offenen Ports gefunden.</span>
+                )}
               </div>
-            ) : null;
-          })}
-        </div>
-      </Card>
-    </div>
-  );
-}
-
-/* ── FQDN tab ──────────────────────────────────────────────────────────────── */
-function FqdnTab({ intel }) {
-  const [search, setSearch]   = useState("");
-  const [sevFilter, setSev]   = useState("ALL");
-  const [sort, setSort]       = useState({ col: "risk", dir: "asc" });
-
-  const rows = (intel?.fqdn_table || [])
-    .filter(r =>
-      (sevFilter === "ALL" || r.risk === sevFilter) &&
-      (!search || r.fqdn?.includes(search) || (r.ip||"").includes(search) || (r.org||"").toLowerCase().includes(search.toLowerCase()))
-    )
-    .sort((a, b) => {
-      let cmp = 0;
-      if (sort.col === "risk") cmp = (SEV_ORDER[a.risk] ?? 9) - (SEV_ORDER[b.risk] ?? 9);
-      if (sort.col === "fqdn") cmp = (a.fqdn || "").localeCompare(b.fqdn || "");
-      if (sort.col === "org")  cmp = (a.org  || "").localeCompare(b.org  || "");
-      if (sort.col === "asn")  cmp = (a.asn  || 0) - (b.asn || 0);
-      return sort.dir === "asc" ? cmp : -cmp;
-    });
-
-  const toggleSort = col => setSort(s => s.col === col ? { col, dir: s.dir === "asc" ? "desc" : "asc" } : { col, dir: "asc" });
-
-  return (
-    <Card>
-      <CardHeader title="FQDN-Inventar" sub={`${rows.length} Einträge`} />
-      <div style={{ display: "flex", gap: 8, alignItems: "center", padding: "10px 16px", borderBottom: `1px solid ${T.border}`, flexWrap: "wrap" }}>
-        <SearchInput value={search} onChange={setSearch} placeholder="FQDN, IP, ASN, Organisation…" width={240} />
-        <div style={{ width: 1, height: 20, background: T.border }} />
-        <FilterPill label="Alle" active={sevFilter === "ALL"} onClick={() => setSev("ALL")} />
-        {["CRITICAL","HIGH","MEDIUM","LOW"].map(s => (
-          <FilterPill key={s} label={s} active={sevFilter === s}
-            color={SEV[s]?.color} onClick={() => setSev(sevFilter === s ? "ALL" : s)} />
-        ))}
-      </div>
-      {rows.length === 0 ? (
-        <EmptyState title="Keine Einträge" sub="Noch kein Scan oder kein Ergebnis für diesen Filter." />
-      ) : (
-        <div style={{ overflowX: "auto" }}>
-          <table style={{ width: "100%", borderCollapse: "collapse" }}>
-            <thead>
-              <tr>
-                <TH onClick={() => toggleSort("fqdn")} sorted={sort.col === "fqdn"}>FQDN</TH>
-                <TH>IP</TH>
-                <TH>Land</TH>
-                <TH onClick={() => toggleSort("org")} sorted={sort.col === "org"}>Organisation</TH>
-                <TH onClick={() => toggleSort("asn")} sorted={sort.col === "asn"}>ASN</TH>
-                <TH onClick={() => toggleSort("risk")} sorted={sort.col === "risk"}>Risiko</TH>
-              </tr>
-            </thead>
-            <tbody>
-              {rows.map((r, i) => (
-                <tr key={i} style={{ transition: "background 0.1s" }}
-                  onMouseEnter={e => e.currentTarget.style.background = T.bg3}
-                  onMouseLeave={e => e.currentTarget.style.background = "transparent"}
-                >
-                  <TD style={{ fontFamily: T.font, fontSize: 11, color: T.accent }}>{r.fqdn || "—"}</TD>
-                  <TD style={{ fontFamily: T.font, fontSize: 11, color: T.text2 }}>{r.ip   || "—"}</TD>
-                  <TD style={{ fontFamily: T.font, fontSize: 11, color: T.text2 }}>{r.country || "—"}</TD>
-                  <TD style={{ maxWidth: 200 }}>
-                    <div style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{r.org || "—"}</div>
-                  </TD>
-                  <TD style={{ fontFamily: T.font, fontSize: 11, color: T.text3 }}>
-                    {r.asn ? `AS${r.asn}` : "—"}
-                  </TD>
-                  <TD><SevBadge sev={r.risk || "INFO"} small /></TD>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+            </Card>
+          )}
         </div>
       )}
-    </Card>
-  );
-}
-
-/* ── Geo tab ───────────────────────────────────────────────────────────────── */
-function GeoTab({ intel }) {
-  const geoAssets = intel?.geo_assets || [];
-
-  if (geoAssets.length === 0) {
-    return (
-      <Card>
-        <EmptyState title="Keine Geo-Daten" sub="Geo-Auflösung benötigt öffentliche IPv4-Adressen. Privat-IP oder kein Scan noch nicht durchgeführt." />
-      </Card>
-    );
-  }
-
-  const center = [geoAssets[0]?.lat || 30, geoAssets[0]?.lng || 10];
-
-  const riskRadius = { CRITICAL: 14, HIGH: 11, MEDIUM: 8, LOW: 6, INFO: 5 };
-  const riskColor  = { CRITICAL: T.critical, HIGH: T.high, MEDIUM: T.medium, LOW: T.low, INFO: T.info };
-
-  return (
-    <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
-      <Card>
-        <CardHeader title="Geografische Verteilung" sub={`${geoAssets.length} Standorte`} />
-        <style>{`
-          .leaflet-container { background: #050810 !important; border-radius: 0 0 8px 8px; }
-          .leaflet-control-attribution { background: rgba(5,8,16,0.85) !important; color: #273548 !important; font-size: 9px !important; }
-          .leaflet-control-attribution a { color: #475569 !important; }
-          .leaflet-control-zoom a { background: #0d1221 !important; border-color: #1e2d45 !important; color: #94a3b8 !important; }
-          .leaflet-popup-content-wrapper { background: #0d1221 !important; border: 1px solid #1e2d45 !important; border-radius: 6px !important; color: #f1f5f9 !important; }
-          .leaflet-popup-tip { background: #0d1221 !important; }
-        `}</style>
-        <MapContainer center={center} zoom={3} style={{ height: 360 }} scrollWheelZoom={false}>
-          <TileLayer
-            url="https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png"
-            attribution='&copy; <a href="https://carto.com">CARTO</a>'
-          />
-          {geoAssets.map((a, i) => (
-            <CircleMarker
-              key={i}
-              center={[a.lat, a.lng]}
-              radius={riskRadius[a.risk] || 6}
-              pathOptions={{ color: riskColor[a.risk] || T.info, fillColor: riskColor[a.risk] || T.info, fillOpacity: 0.6, weight: 1.5 }}
-            >
-              <Popup>
-                <div style={{ fontFamily: T.font, fontSize: 11, color: T.text0, lineHeight: 1.6 }}>
-                  <strong style={{ color: riskColor[a.risk] }}>{a.city}, {a.country}</strong><br />
-                  {a.ip_count} IP{a.ip_count !== 1 ? "s" : ""} &nbsp;·&nbsp; {a.risk}
-                </div>
-              </Popup>
-            </CircleMarker>
-          ))}
-        </MapContainer>
-      </Card>
-
-      {/* Table */}
-      <Card>
-        <CardHeader title="Standorte" />
-        <div style={{ overflowX: "auto" }}>
-          <table style={{ width: "100%", borderCollapse: "collapse" }}>
-            <thead>
-              <tr>
-                <TH>Stadt</TH>
-                <TH>Land</TH>
-                <TH>IPs</TH>
-                <TH>Risiko</TH>
-              </tr>
-            </thead>
-            <tbody>
-              {geoAssets.map((a, i) => (
-                <tr key={i} style={{ transition: "background 0.1s" }}
-                  onMouseEnter={e => e.currentTarget.style.background = T.bg3}
-                  onMouseLeave={e => e.currentTarget.style.background = "transparent"}
-                >
-                  <TD style={{ fontFamily: T.fontSans, fontSize: 12, color: T.text0 }}>{a.city || "—"}</TD>
-                  <TD style={{ fontFamily: T.font, fontSize: 11, color: T.text2 }}>{a.country || "—"}</TD>
-                  <TD style={{ fontFamily: T.font, fontSize: 11, color: T.accent, fontWeight: 700 }}>{a.ip_count}</TD>
-                  <TD><SevBadge sev={a.risk || "INFO"} small /></TD>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      </Card>
     </div>
   );
 }
 
-/* ── DNS tab ───────────────────────────────────────────────────────────────── */
-function DnsTab({ intel }) {
-  const dns   = intel?.dns_info || {};
-  const email = intel?.email_info || {};
+function AbusePanel({ data }) {
+  const score = data.abuseConfidenceScore ?? data.score ?? 0;
+  const color = score >= 80 ? T.critical : score >= 40 ? T.high : score >= 10 ? T.medium : T.accent;
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 16 }}>
+        <div style={{
+          width: 64, height: 64, borderRadius: "50%", flexShrink: 0,
+          background: alpha(color, 12), border: `2px solid ${alpha(color, 40)}`,
+          display: "flex", alignItems: "center", justifyContent: "center",
+          fontFamily: T.font, fontSize: 20, fontWeight: 700, color,
+        }}>{score}</div>
+        <div>
+          <div style={{ fontFamily: T.fontSans, fontSize: 12, color: T.text0, fontWeight: 600, marginBottom: 4 }}>
+            Confidence Score
+          </div>
+          <div style={{ fontFamily: T.fontSans, fontSize: 11, color: T.text2 }}>
+            {score >= 80 ? "Hochgradig schädlich" : score >= 40 ? "Verdächtig" : score >= 10 ? "Leicht verdächtig" : "Unauffällig"}
+          </div>
+        </div>
+      </div>
+      {data.countryCode && (
+        <Row label="Land"        value={data.countryCode} />
+      )}
+      {data.isp && (
+        <Row label="ISP"         value={data.isp} />
+      )}
+      {data.totalReports != null && (
+        <Row label="Reports"     value={data.totalReports} />
+      )}
+      {data.lastReportedAt && (
+        <Row label="Letzter Report" value={new Date(data.lastReportedAt).toLocaleDateString("de-DE")} />
+      )}
+    </div>
+  );
+}
 
-  const dnsTypes = ["MX", "NS", "TXT", "SOA", "DMARC"];
+function VtPanel({ data }) {
+  const stats    = data.last_analysis_stats || data.stats || {};
+  const malicious = stats.malicious || 0;
+  const suspicious= stats.suspicious || 0;
+  const harmless  = stats.harmless || 0;
+  const total     = malicious + suspicious + harmless + (stats.undetected || 0);
+  const color     = malicious > 5 ? T.critical : malicious > 0 ? T.high : suspicious > 0 ? T.medium : T.accent;
 
   return (
-    <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16 }}>
-      {/* DNS Records */}
+    <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+      <div style={{ display: "flex", gap: 16 }}>
+        <ScoreChip label="Malicious"  value={malicious}  color={T.critical} />
+        <ScoreChip label="Suspicious" value={suspicious} color={T.medium}   />
+        <ScoreChip label="Harmless"   value={harmless}   color={T.accent}   />
+      </div>
+      {total > 0 && (
+        <div>
+          <div style={{ fontFamily: T.font, fontSize: 9, color: T.text3, marginBottom: 4 }}>
+            ENGINES ({total} total)
+          </div>
+          <div style={{ height: 6, background: T.bg4, borderRadius: 3, overflow: "hidden", display: "flex" }}>
+            <div style={{ width: `${(malicious/total)*100}%`,  height: "100%", background: T.critical }} />
+            <div style={{ width: `${(suspicious/total)*100}%`, height: "100%", background: T.medium   }} />
+            <div style={{ width: `${(harmless/total)*100}%`,   height: "100%", background: T.accent   }} />
+          </div>
+        </div>
+      )}
+      {data.country && <Row label="Land" value={data.country} />}
+      {data.as_owner && <Row label="ASN Owner" value={data.as_owner} />}
+    </div>
+  );
+}
+
+function ScoreChip({ label, value, color }) {
+  return (
+    <div style={{ textAlign: "center" }}>
+      <div style={{ fontFamily: T.font, fontSize: 18, fontWeight: 700, color }}>{value}</div>
+      <div style={{ fontFamily: T.font, fontSize: 9, color: T.text3 }}>{label.toUpperCase()}</div>
+    </div>
+  );
+}
+
+function Row({ label, value }) {
+  return (
+    <div style={{ display: "flex", justifyContent: "space-between", gap: 8 }}>
+      <span style={{ fontFamily: T.fontSans, fontSize: 11, color: T.text3 }}>{label}</span>
+      <span style={{ fontFamily: T.font, fontSize: 11, color: T.text1 }}>{value}</span>
+    </div>
+  );
+}
+
+/* ── Breaches (HIBP) ── */
+function BreachesTab() {
+  const { tenantId } = useApp();
+  const [email,   setEmail]   = useState("");
+  const [loading, setLoading] = useState(false);
+  const [result,  setResult]  = useState(null);
+  const [error,   setError]   = useState(null);
+
+  const lookup = useCallback(async () => {
+    const target = email.trim();
+    if (!target) return;
+    setLoading(true); setError(null); setResult(null);
+    try {
+      const data = await apiFetch(`/tenants/${tenantId}/intel/breaches?email=${encodeURIComponent(target)}`);
+      setResult(data);
+    } catch (e) {
+      setError(e.message);
+    } finally {
+      setLoading(false);
+    }
+  }, [email, tenantId]);
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
       <Card>
-        <CardHeader title="DNS-Records" />
-        <div style={{ padding: "12px 0" }}>
-          {dnsTypes.map(type => {
-            const records = dns[type] || [];
-            return (
-              <div key={type} style={{ padding: "8px 18px", borderBottom: `1px solid ${T.border}` }}>
-                <div style={{
-                  display: "flex", alignItems: "center", gap: 8, marginBottom: records.length > 0 ? 6 : 0,
-                }}>
-                  <span style={{
-                    fontFamily: T.font, fontSize: 9, fontWeight: 700, color: T.accent,
-                    background: T.accent3, border: `1px solid ${alpha(T.accent, 19)}`,
-                    padding: "1px 7px", borderRadius: 3, minWidth: 48, textAlign: "center",
-                  }}>{type}</span>
-                  {records.length === 0 && (
-                    <span style={{ fontFamily: T.fontSans, fontSize: 11, color: T.text3 }}>Kein Eintrag</span>
-                  )}
-                </div>
-                {records.map((r, i) => (
-                  <div key={i} style={{
-                    fontFamily: T.font, fontSize: 10, color: T.text1,
-                    padding: "3px 6px", background: T.bg3, borderRadius: 3,
-                    marginBottom: 3, wordBreak: "break-all", lineHeight: 1.5,
-                  }}>{r}</div>
-                ))}
-              </div>
-            );
-          })}
+        <div style={{ padding: "20px 24px" }}>
+          <div style={{ fontFamily: T.fontSans, fontSize: 13, fontWeight: 600, color: T.text0, marginBottom: 4 }}>
+            E-Mail auf Datenpannen prüfen
+          </div>
+          <div style={{ fontFamily: T.fontSans, fontSize: 11, color: T.text3, marginBottom: 12 }}>
+            Powered by HaveIBeenPwned — API-Key erforderlich (Feed Settings)
+          </div>
+          <div style={{ display: "flex", gap: 8 }}>
+            <input
+              value={email}
+              onChange={e => setEmail(e.target.value)}
+              onKeyDown={e => e.key === "Enter" && lookup()}
+              placeholder="user@example.com"
+              style={{
+                flex: 1, padding: "9px 14px",
+                background: T.bg3, border: `1px solid ${T.border}`,
+                borderRadius: 6, fontFamily: T.font, fontSize: 12, color: T.text0,
+                outline: "none",
+              }}
+            />
+            <Btn onClick={lookup} variant="primary" disabled={loading || !email.trim()}>
+              <Search size={12} />
+              {loading ? "Lädt…" : "Prüfen"}
+            </Btn>
+          </div>
+          {error && (
+            <div style={{ marginTop: 10, fontFamily: T.fontSans, fontSize: 12, color: T.critical }}>
+              {error}
+            </div>
+          )}
         </div>
       </Card>
 
-      {/* Email findings */}
-      <Card>
-        <CardHeader title="E-Mail & OSINT" />
-        <div style={{ padding: "16px 20px" }}>
-          {intel?.emails?.length > 0 ? (
+      {result && (
+        <>
+          {result.breaches?.length > 0 ? (
             <>
-              <div style={{ fontFamily: T.font, fontSize: 9, color: T.text4, letterSpacing: "0.08em", marginBottom: 8 }}>
-                GEFUNDENE E-MAIL-ADRESSEN
+              <div style={{ fontFamily: T.fontSans, fontSize: 13, fontWeight: 600, color: T.text0 }}>
+                {result.breaches.length} Datenpanne{result.breaches.length !== 1 ? "n" : ""} gefunden
               </div>
-              {(intel.emails || []).map((e, i) => (
-                <div key={i} style={{
-                  fontFamily: T.font, fontSize: 11, color: T.low,
-                  padding: "5px 8px", background: T.bg3, borderRadius: 3, marginBottom: 4,
-                }}>{e}</div>
-              ))}
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(280px, 1fr))", gap: 12 }}>
+                {result.breaches.map((b, i) => (
+                  <BreachCard key={i} breach={b} />
+                ))}
+              </div>
             </>
           ) : (
-            <div style={{ fontFamily: T.fontSans, fontSize: 12, color: T.text3 }}>
-              Keine E-Mail-Adressen gefunden.
-            </div>
-          )}
-
-          {intel?.subdomains_by_source && (
-            <div style={{ marginTop: 20 }}>
-              <div style={{ fontFamily: T.font, fontSize: 9, color: T.text4, letterSpacing: "0.08em", marginBottom: 8 }}>
-                SUBDOMAIN-QUELLEN
-              </div>
-              {Object.entries(intel.subdomains_by_source).map(([src, cnt]) => (
-                <div key={src} style={{ display: "flex", justifyContent: "space-between", padding: "5px 0", borderBottom: `1px solid ${T.border}` }}>
-                  <span style={{ fontFamily: T.fontSans, fontSize: 12, color: T.text2 }}>{src}</span>
-                  <span style={{ fontFamily: T.font, fontSize: 12, fontWeight: 700, color: T.accent }}>{cnt}</span>
+            <Card>
+              <div style={{
+                padding: "32px 24px", display: "flex", alignItems: "center", justifyContent: "center",
+                flexDirection: "column", gap: 10,
+              }}>
+                <CheckCircle size={32} color={T.accent} />
+                <div style={{ fontFamily: T.fontSans, fontSize: 14, fontWeight: 600, color: T.text0 }}>
+                  Keine Datenpannen gefunden
                 </div>
-              ))}
-            </div>
+                <div style={{ fontFamily: T.fontSans, fontSize: 12, color: T.text3 }}>
+                  {email} wurde in keiner bekannten Datenpanne gefunden.
+                </div>
+              </div>
+            </Card>
           )}
+        </>
+      )}
+    </div>
+  );
+}
+
+function BreachCard({ breach }) {
+  const sevColor = breach.IsSensitive ? T.critical : breach.IsVerified ? T.high : T.medium;
+  return (
+    <div style={{
+      background: T.bg2, border: `1px solid ${T.border}`,
+      borderRadius: 8, padding: 16, borderTop: `2px solid ${alpha(sevColor, 50)}`,
+    }}>
+      <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 8, marginBottom: 8 }}>
+        <div style={{ fontFamily: T.fontSans, fontSize: 13, fontWeight: 700, color: T.text0 }}>
+          {breach.Name || breach.name}
+        </div>
+        {breach.IsVerified && (
+          <span style={{
+            fontFamily: T.font, fontSize: 8, color: T.critical,
+            background: T.criticalBg, border: `1px solid ${T.criticalBorder}`,
+            padding: "1px 6px", borderRadius: 3, flexShrink: 0,
+          }}>VERIFIED</span>
+        )}
+      </div>
+      {breach.BreachDate && (
+        <div style={{ fontFamily: T.fontSans, fontSize: 11, color: T.text3, marginBottom: 8 }}>
+          {new Date(breach.BreachDate).toLocaleDateString("de-DE")}
+          {breach.PwnCount && ` · ${(breach.PwnCount / 1e6).toFixed(1)}M Datensätze`}
+        </div>
+      )}
+      {breach.DataClasses?.length > 0 && (
+        <div style={{ display: "flex", flexWrap: "wrap", gap: 4 }}>
+          {breach.DataClasses.slice(0, 6).map(c => (
+            <span key={c} style={{
+              fontFamily: T.font, fontSize: 8, color: sevColor,
+              background: alpha(sevColor, 10), border: `1px solid ${alpha(sevColor, 25)}`,
+              padding: "1px 6px", borderRadius: 3,
+            }}>{c}</span>
+          ))}
+        </div>
+      )}
+      {breach.Description && (
+        <div
+          style={{ fontFamily: T.fontSans, fontSize: 11, color: T.text3, marginTop: 8, lineHeight: 1.5 }}
+          dangerouslySetInnerHTML={{ __html: breach.Description?.replace(/<[^>]+>/g, "").slice(0, 160) + "…" }}
+        />
+      )}
+    </div>
+  );
+}
+
+/* ── Feed Settings ── */
+function FeedSettingsTab() {
+  const { tenantId } = useApp();
+  const [feeds, setFeeds] = useState(DEFAULT_FEEDS);
+  const [saving, setSaving] = useState(null);
+  const [showKey, setShowKey] = useState({});
+
+  const toggle = async (id) => {
+    const feed = feeds.find(f => f.id === id);
+    const next = !feed.enabled;
+    setFeeds(fs => fs.map(f => f.id === id ? { ...f, enabled: next } : f));
+    setSaving(id);
+    try {
+      await apiFetch(`/tenants/${tenantId}/intel/feeds/${id}`, {
+        method: "PATCH", body: { enabled: next },
+      });
+    } catch (e) {
+      setFeeds(fs => fs.map(f => f.id === id ? { ...f, enabled: feed.enabled } : f));
+      toast.error("Fehler beim Speichern", { description: e.message });
+    } finally {
+      setSaving(null);
+    }
+  };
+
+  const saveKey = async (id, key) => {
+    setSaving(id);
+    try {
+      await apiFetch(`/tenants/${tenantId}/intel/feeds/${id}`, {
+        method: "PATCH", body: { api_key: key },
+      });
+      toast.success("API-Key gespeichert");
+    } catch (e) {
+      toast.error("Fehler", { description: e.message });
+    } finally {
+      setSaving(null);
+    }
+  };
+
+  const updateKey = (id, key) => setFeeds(fs => fs.map(f => f.id === id ? { ...f, key } : f));
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+      <Card>
+        <CardHeader title="Threat-Feed-Konfiguration" sub="API-Keys und Aktivierungsstatus der integrierten Threat Feeds" />
+        <div>
+          {feeds.map((feed, i) => (
+            <div key={feed.id} style={{
+              display: "flex", alignItems: "center", gap: 16,
+              padding: "16px 20px",
+              borderBottom: i < feeds.length - 1 ? `1px solid ${T.border}` : "none",
+              transition: "background 0.1s",
+            }}
+              onMouseEnter={e => e.currentTarget.style.background = T.bg3}
+              onMouseLeave={e => e.currentTarget.style.background = "transparent"}
+            >
+              {/* Toggle */}
+              <button
+                onClick={() => toggle(feed.id)}
+                disabled={saving === feed.id}
+                style={{
+                  width: 36, height: 20, borderRadius: 10, border: "none", cursor: "pointer",
+                  background: feed.enabled ? T.accent : T.bg4,
+                  position: "relative", transition: "background 0.2s", flexShrink: 0,
+                  opacity: saving === feed.id ? 0.6 : 1,
+                }}
+              >
+                <div style={{
+                  position: "absolute", top: 2,
+                  left: feed.enabled ? 18 : 2,
+                  width: 16, height: 16, borderRadius: "50%",
+                  background: feed.enabled ? "var(--background)" : T.border2,
+                  transition: "left 0.15s",
+                }} />
+              </button>
+
+              {/* Info */}
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 2 }}>
+                  <span style={{ fontFamily: T.fontSans, fontSize: 13, fontWeight: 600, color: T.text0 }}>
+                    {feed.name}
+                  </span>
+                  {!feed.requiresKey && (
+                    <span style={{
+                      fontFamily: T.font, fontSize: 8, color: T.accent,
+                      background: T.accent3, border: `1px solid ${alpha(T.accent, 25)}`,
+                      padding: "0 5px", borderRadius: 3,
+                    }}>FREE</span>
+                  )}
+                </div>
+                <div style={{ fontFamily: T.fontSans, fontSize: 11, color: T.text3 }}>
+                  {feed.description}
+                </div>
+              </div>
+
+              {/* API Key input */}
+              {feed.requiresKey && (
+                <div style={{ display: "flex", gap: 6, alignItems: "center", flexShrink: 0 }}>
+                  <div style={{ position: "relative" }}>
+                    <input
+                      type={showKey[feed.id] ? "text" : "password"}
+                      value={feed.key}
+                      onChange={e => updateKey(feed.id, e.target.value)}
+                      placeholder="API-Key eingeben…"
+                      style={{
+                        width: 220, padding: "7px 32px 7px 10px",
+                        background: T.bg3, border: `1px solid ${T.border}`,
+                        borderRadius: 6, fontFamily: T.font, fontSize: 11, color: T.text0,
+                        outline: "none",
+                      }}
+                    />
+                    <button
+                      onClick={() => setShowKey(s => ({ ...s, [feed.id]: !s[feed.id] }))}
+                      style={{
+                        position: "absolute", right: 8, top: "50%", transform: "translateY(-50%)",
+                        background: "none", border: "none", color: T.text3, cursor: "pointer",
+                        display: "flex", alignItems: "center",
+                      }}
+                    >
+                      {showKey[feed.id] ? <EyeOff size={12} /> : <Eye size={12} />}
+                    </button>
+                  </div>
+                  <Btn
+                    onClick={() => saveKey(feed.id, feed.key)}
+                    variant="secondary"
+                    disabled={saving === feed.id || !feed.key.trim()}
+                  >
+                    {saving === feed.id ? "…" : "Speichern"}
+                  </Btn>
+                </div>
+              )}
+            </div>
+          ))}
         </div>
       </Card>
     </div>
