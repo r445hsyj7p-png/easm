@@ -1055,18 +1055,18 @@ def _geoip_batch(ips: list) -> dict:
     Private/reservierte IPs werden herausgefiltert (ip-api gibt status:fail zurück).
     """
     import urllib.request as _ur
-    import urllib.error as _ue
     import json as _j
     import ipaddress as _ipa
 
     if not ips:
         return {}
 
-    # Filter private/reserved ranges — ip-api.com returns status:fail for these
+    # ip-api.com free tier: IPv4 only, no private/reserved ranges
     public_ips = []
     for ip in ips:
         try:
-            if not _ipa.ip_address(ip).is_private:
+            _addr = _ipa.ip_address(ip)
+            if _addr.version == 4 and not _addr.is_private:
                 public_ips.append(ip)
         except ValueError:
             pass
@@ -1075,7 +1075,7 @@ def _geoip_batch(ips: list) -> dict:
         return {}
 
     # Batch endpoint: POST http://ip-api.com/batch (HTTP only on free tier)
-    payload = json.dumps([
+    payload = _j.dumps([
         {"query": ip, "fields": "status,city,country,countryCode,lat,lon,query"}
         for ip in public_ips[:100]
     ]).encode()
