@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { Monitor, Network, Server, BarChart2, Code2, Lock, Plus, X, ExternalLink } from "lucide-react";
 import { T, alpha } from "../theme";
-import { Card, CardHeader, TH, TD, EmptyState, SearchInput, Btn } from "../components/ui/index";
+import { Card, TH, TD, EmptyState, SearchInput, Btn } from "../components/ui/index";
 import { FacetedFilter, Pagination } from "../components/ui/FacetedFilter";
 import { useApp } from "../context/AppContext";
 import { apiFetch } from "../api/client";

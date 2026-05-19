@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { ShieldAlert, X } from "lucide-react";
 import { T, SEV, alpha } from "../theme";
-import { Card, CardHeader, TH, TD, SevBadge, EmptyState, SearchInput, Btn } from "../components/ui/index";
+import { Card, TH, TD, SevBadge, EmptyState, SearchInput, Btn } from "../components/ui/index";
 import { FacetedFilter, Pagination } from "../components/ui/FacetedFilter";
 import { useApp } from "../context/AppContext";
 import { apiFetch } from "../api/client";

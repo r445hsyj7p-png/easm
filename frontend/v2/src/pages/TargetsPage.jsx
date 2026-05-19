@@ -2,8 +2,8 @@ import { useState } from "react";
 import { toast } from "sonner";
 import { Target, Play, RefreshCw } from "lucide-react";
 import { T } from "../theme";
-import { Card, CardHeader, TH, TD, SevBadge, EmptyState, SearchInput, Btn } from "../components/ui/index";
-import { FacetedFilter, PillFilter, Pagination } from "../components/ui/FacetedFilter";
+import { Card, TH, TD, SevBadge, EmptyState, SearchInput, Btn } from "../components/ui/index";
+import { FacetedFilter, Pagination } from "../components/ui/FacetedFilter";
 import { useApp } from "../context/AppContext";
 import { apiFetch } from "../api/client";
 
