@@ -555,218 +555,307 @@ class NaabuAdapter:
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# ADAPTER 3: THEHARVESTER
-# OSINT — E-Mails, Namen, Hosts, VHosts aus öffentlichen Quellen
+# ADAPTER 3: THEHARVESTER  (native Python — kein externes Binary)
+# OSINT — E-Mails, DNS-Records, Subdomains aus öffentlichen Quellen
 # ═══════════════════════════════════════════════════════════════════════════════
 
 class TheHarvesterAdapter:
     """
-    theHarvester — OSINT Reconnaissance
-    Repo: https://github.com/laramies/theHarvester
+    Native Python OSINT — kein externes Binary, keine schweren Dependencies.
 
-    Sammelt aus Google, Bing, LinkedIn, GitHub, DuckDuckGo:
-    - E-Mail-Adressen (→ mit HIBP korrelieren)
-    - Mitarbeiter-Namen + Jobtitel
-    - Subdomains / Hosts
-    - Virtual Hosts
+    Quellen:
+      - DNS: MX / NS / TXT / SPF / DMARC → E-Mail-Infrastruktur, Dienste
+      - crt.sh: Certificate Transparency → Subdomains
+      - Wayback CDX API: historische Crawl-URLs → zusätzliche Subdomains
+      - HTTP-Scraping: Website, robots.txt, sitemap.xml, /contact, /about
+        → E-Mail-Adressen per Regex
+
+    Abhängigkeiten: dnspython, requests — beide bereits in requirements.txt.
     """
 
-    # Quellen für den Scan (kein API-Key nötig für Basis)
-    FREE_SOURCES = "bing,google,duckduckgo,crtsh,dnsdumpster,otx,sublist3r"
-    FULL_SOURCES = "bing,google,duckduckgo,linkedin,github,crtsh,dnsdumpster,otx"
+    _EMAIL_RE = re.compile(
+        r'\b[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}\b'
+    )
+    # Pages likely to contain email addresses
+    _SCRAPE_PATHS = [
+        "/", "/contact", "/kontakt", "/about", "/ueber-uns",
+        "/team", "/imprint", "/impressum", "/legal",
+        "/robots.txt", "/sitemap.xml",
+    ]
+    # DNS record types queried on the apex domain
+    _DNS_TYPES = ["MX", "NS", "TXT", "SOA"]
 
     def run(self, tenant_id: str, domain: str,
-            limit: int = 500, use_full_sources: bool = False,
+            limit: int = 500,        # unused — kept for API compatibility
+            use_full_sources: bool = False,  # unused — kept for API compatibility
             log_fn=None) -> list[ToolFinding]:
-        """
-        Args:
-            domain: Ziel-Domain
-            limit: Maximale Anzahl Ergebnisse pro Quelle
-            use_full_sources: LinkedIn + GitHub (mehr Ergebnisse)
-            log_fn: Optionale Log-Funktion (tool, msg, level)
-        """
-        sources = self.FULL_SOURCES if use_full_sources else self.FREE_SOURCES
+        if log_fn:
+            log_fn("theharvester", f"native Python OSINT für {domain}", "info")
 
-        with tempfile.NamedTemporaryFile(suffix=".json", delete=False) as tf:
-            output_file = tf.name
+        emails     = self._harvest_emails(domain, log_fn)
+        dns_info   = self._harvest_dns(domain, log_fn)
+        crtsh_subs = self._harvest_crtsh(domain, log_fn)
+        wb_subs    = self._harvest_wayback(domain, log_fn)
+        subdomains = sorted(set(crtsh_subs) | set(wb_subs))
 
-        # Try binary first (full path), then python -m theHarvester as module fallback
-        _binary_path = tool_path("theHarvester")
-        _binary_avail = _binary_path is not None
-        _module_avail = False
-        if not _binary_avail:
-            try:
-                import subprocess as _sp
-                _r = _sp.run(
-                    ["python", "-m", "theHarvester", "--help"],
-                    capture_output=True, timeout=10
-                )
-                _module_avail = _r.returncode == 0
-            except Exception:
-                pass
-
-        _avail = _binary_avail or _module_avail
-        _invoke = ([_binary_path] if _binary_avail
-                   else ["python", "-m", "theHarvester"] if _module_avail
-                   else None)
+        findings = []
+        self._emit_email_findings(tenant_id, domain, emails, findings)
+        self._emit_dns_findings(tenant_id, domain, dns_info, findings)
+        self._emit_subdomain_findings(tenant_id, domain, subdomains,
+                                      crtsh_count=len(crtsh_subs),
+                                      wb_count=len(wb_subs),
+                                      findings=findings)
 
         if log_fn:
-            if _binary_avail:
-                log_fn("theharvester", f"binary verfügbar ({_binary_path})", "info")
-            elif _module_avail:
-                log_fn("theharvester", "binary nicht gefunden, nutze python -m theHarvester", "warn")
-            else:
-                log_fn("theharvester",
-                       "binary NICHT gefunden — Worker-Image neu bauen (git fehlte beim letzten Build)",
-                       "warn")
-
-        if not _avail:
-            try:
-                os.unlink(output_file)
-            except Exception:
-                pass
-            return []
-
-        try:
-            cmd = _invoke + [
-                "-d", domain,
-                "-b", sources,
-                "-l", str(limit),
-                "-f", output_file.replace(".json", ""),
-                # --dns-lookup omitted: removed in theHarvester 4.6+ (DNS resolution
-                # now happens automatically per-source, flag no longer accepted)
-            ]
-
-            rc, stdout, stderr = _run(cmd, timeout=300)
-            _stderr_clean = (stderr or "").strip()
-
-            if rc != 0:
-                # Log full stderr in chunks so no part of the traceback is lost
-                if log_fn and _stderr_clean:
-                    for _i in range(0, min(len(_stderr_clean), 3200), 400):
-                        log_fn("theharvester", f"stderr: {_stderr_clean[_i:_i+400]}", "error")
-
-                # Binary crashed (e.g. ImportError from optional dependency) →
-                # retry transparently with the python -m module variant
-                if "Traceback" in _stderr_clean or "ImportError" in _stderr_clean or "ModuleNotFoundError" in _stderr_clean:
-                    _py_path = tool_path("python") or tool_path("python3") or "python3"
-                    _module_cmd = [_py_path, "-m", "theHarvester",
-                                   "-d", domain, "-b", sources, "-l", str(limit),
-                                   "-f", output_file.replace(".json", "")]
-                    if log_fn:
-                        log_fn("theharvester",
-                               "binary Import-Fehler — fallback auf python -m theHarvester", "warn")
-                    rc2, stdout2, stderr2 = _run(_module_cmd, timeout=300)
-                    if rc2 == 0:
-                        rc, stdout, stderr = rc2, stdout2, stderr2
-                    elif log_fn:
-                        log_fn("theharvester",
-                               f"module fallback ebenfalls rc={rc2}: {(stderr2 or '').strip()[:400]}", "error")
-            else:
-                if log_fn:
-                    log_fn("theharvester", "rc=0, Ausgabe geparst", "info")
-
-            return self._parse_json(tenant_id, domain, output_file, stdout)
-
-        finally:
-            for ext in [".json", ".xml"]:
-                path = output_file.replace(".json", ext)
-                if os.path.exists(path):
-                    os.unlink(path)
-
-    def _parse_json(self, tenant_id: str, domain: str,
-                    json_file: str, stdout: str) -> list[ToolFinding]:
-        findings = []
-        data = {}
-
-        # JSON-Datei lesen
-        try:
-            with open(json_file) as f:
-                data = json.load(f)
-        except (FileNotFoundError, json.JSONDecodeError):
-            # Fallback: stdout parsen
-            data = self._parse_stdout(stdout)
-
-        # E-Mail-Adressen
-        emails = data.get("emails", [])
-        if emails:
-            # Alle E-Mails der Domain sammeln
-            domain_emails = [e for e in emails if f"@{domain}" in e.lower()]
-            external_emails = [e for e in emails if f"@{domain}" not in e.lower()]
-
-            if domain_emails:
-                findings.append(ToolFinding(
-                    tenant_id=tenant_id, tool="theharvester",
-                    category="email",
-                    severity="MEDIUM",
-                    title=f"{len(domain_emails)} Mitarbeiter-E-Mails öffentlich bekannt",
-                    description=(
-                        f"{len(domain_emails)} @{domain} E-Mail-Adressen aus öffentlichen Quellen geerntet. "
-                        f"Diese sollten gegen HIBP/Stealer-Logs geprüft werden.\n"
-                        f"Beispiele: {', '.join(domain_emails[:5])}"
-                        f"{'...' if len(domain_emails) > 5 else ''}"
-                    ),
-                    affected_asset=domain,
-                    remediation="E-Mails gegen HIBP prüfen, Passwort-Reset-Kampagne, Security-Awareness-Training",
-                    raw_data={"emails": domain_emails},
-                ))
-
-        # Hosts / Subdomains
-        hosts = data.get("hosts", []) or data.get("subdomains", [])
-        new_hosts = [h for h in hosts if h.endswith(f".{domain}")]
-        if new_hosts:
-            findings.append(ToolFinding(
-                tenant_id=tenant_id, tool="theharvester",
-                category="subdomain",
-                severity="LOW",
-                title=f"{len(new_hosts)} zusätzliche Hosts über OSINT gefunden",
-                description=(
-                    f"theHarvester hat {len(new_hosts)} Hosts für {domain} in öffentlichen Quellen gefunden.\n"
-                    f"Hosts: {', '.join(new_hosts[:10])}"
-                ),
-                affected_asset=domain,
-                remediation="Hosts auf Notwendigkeit und Sicherheit prüfen",
-                raw_data={"hosts": new_hosts},
-            ))
-
-        # LinkedIn-Mitarbeiter (wenn verfügbar)
-        linkedin = data.get("linkedin_links", []) or data.get("people", [])
-        if linkedin:
-            findings.append(ToolFinding(
-                tenant_id=tenant_id, tool="theharvester",
-                category="osint",
-                severity="LOW",
-                title=f"{len(linkedin)} LinkedIn-Profile öffentlich gefunden",
-                description=(
-                    f"theHarvester hat {len(linkedin)} mit {domain} verknüpfte LinkedIn-Profile gefunden.\n"
-                    f"Diese Personen sind potenzielle Spear-Phishing-Ziele wenn kombiniert mit Credential-Leaks."
-                ),
-                affected_asset=domain,
-                remediation="LinkedIn-Exposition ist normal, aber Kombination mit HIBP-Daten beachten",
-                raw_data={"linkedin": linkedin[:20]},
-            ))
-
-        # Interessante IPs
-        ips = data.get("ips", [])
-        if ips:
-            findings.append(ToolFinding(
-                tenant_id=tenant_id, tool="theharvester",
-                category="ip",
-                severity="INFO",
-                title=f"{len(ips)} IP-Adressen via OSINT identifiziert",
-                description=f"IPs: {', '.join(ips[:10])}",
-                affected_asset=domain,
-                raw_data={"ips": ips},
-            ))
-
+            log_fn("theharvester",
+                   f"{len(emails)} E-Mails | {len(subdomains)} Subdomains "
+                   f"(crt.sh={len(crtsh_subs)}, wayback={len(wb_subs)}) "
+                   f"| {sum(len(v) for v in dns_info.values())} DNS-Records", "info")
         return findings
 
-    def _parse_stdout(self, stdout: str) -> dict:
-        """Fallback: Parst stdout wenn JSON-Datei nicht erstellt wurde"""
-        result = {"emails": [], "hosts": [], "ips": []}
-        email_pattern = re.compile(r'\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b')
-        result["emails"] = list(set(email_pattern.findall(stdout)))
-        return result
+    # ── Email harvesting ───────────────────────────────────────────────────────
+
+    def _harvest_emails(self, domain: str, log_fn) -> set:
+        import requests as _req
+        import urllib3
+        urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+
+        emails = set()
+        session = _req.Session()
+        session.headers["User-Agent"] = "Mozilla/5.0 EASM-Scanner/1.0"
+
+        for path in self._SCRAPE_PATHS:
+            for scheme in ("https", "http"):
+                url = f"{scheme}://{domain}{path}"
+                try:
+                    resp = session.get(url, timeout=8, allow_redirects=True,
+                                       verify=False)
+                    found = self._EMAIL_RE.findall(resp.text)
+                    emails.update(e.lower() for e in found)
+                    break  # scheme succeeded (even 404) — don't retry with http
+                except Exception:
+                    continue  # connection refused / timeout — try next scheme
+
+        # Filter out false positives: image names, file extensions, etc.
+        emails = {
+            e for e in emails
+            if "." in e.split("@")[1]
+            and not e.endswith((".png", ".jpg", ".gif", ".svg", ".css", ".js"))
+            and len(e) < 120
+        }
+        return emails
+
+    # ── DNS records ───────────────────────────────────────────────────────────
+
+    def _harvest_dns(self, domain: str, log_fn) -> dict:
+        try:
+            import dns.resolver as _res
+            import dns.exception as _exc
+        except ImportError:
+            if log_fn:
+                log_fn("theharvester", "dnspython nicht verfügbar — DNS-Phase übersprungen", "warn")
+            return {}
+
+        records: dict[str, list[str]] = {}
+
+        # Standard records on apex domain
+        for rtype in self._DNS_TYPES:
+            try:
+                answers = _res.resolve(domain, rtype, lifetime=10)
+                records[rtype] = [str(r) for r in answers]
+                if log_fn:
+                    log_fn("theharvester", f"DNS {rtype}: {len(records[rtype])} Records", "debug")
+            except _exc.NXDOMAIN:
+                if log_fn:
+                    log_fn("theharvester", f"DNS {rtype}: NXDOMAIN für {domain}", "debug")
+            except _exc.NoAnswer:
+                pass  # record type simply not set — not an error
+            except Exception as exc:
+                if log_fn:
+                    log_fn("theharvester", f"DNS {rtype} Fehler: {exc}", "debug")
+
+        # DMARC is always on _dmarc.<domain>, never on the apex domain
+        dmarc_host = f"_dmarc.{domain}"
+        try:
+            dmarc_answers = _res.resolve(dmarc_host, "TXT", lifetime=10)
+            records["DMARC"] = [str(r) for r in dmarc_answers]
+            if log_fn:
+                log_fn("theharvester", f"DMARC-Record auf {dmarc_host} gefunden", "debug")
+        except _exc.NXDOMAIN:
+            records["DMARC"] = []  # subdomain does not exist → no DMARC
+        except _exc.NoAnswer:
+            records["DMARC"] = []  # subdomain exists but no TXT → no DMARC
+        except Exception as exc:
+            records["DMARC"] = []
+            if log_fn:
+                log_fn("theharvester", f"DMARC-Abfrage Fehler ({dmarc_host}): {exc}", "debug")
+
+        return records
+
+    # ── Certificate Transparency (crt.sh) ────────────────────────────────────
+
+    def _harvest_crtsh(self, domain: str, log_fn) -> list[str]:
+        import requests as _req
+        try:
+            resp = _req.get(
+                "https://crt.sh/",
+                params={"q": f"%.{domain}", "output": "json"},
+                timeout=15,
+                headers={"User-Agent": "EASM-Scanner/1.0"},
+            )
+            if resp.status_code != 200:
+                if log_fn:
+                    log_fn("theharvester", f"crt.sh HTTP {resp.status_code}", "warn")
+                return []
+            subdomains = set()
+            for entry in resp.json():
+                name = entry.get("name_value", "")
+                for n in name.splitlines():
+                    n = n.strip().lstrip("*.")
+                    if n.endswith(f".{domain}") or n == domain:
+                        subdomains.add(n.lower())
+            return sorted(subdomains)
+        except Exception as exc:
+            if log_fn:
+                log_fn("theharvester", f"crt.sh Fehler: {exc}", "warn")
+            return []
+
+    # ── Wayback CDX API ───────────────────────────────────────────────────────
+
+    def _harvest_wayback(self, domain: str, log_fn) -> list[str]:
+        """Query the Wayback Machine CDX API for historical URLs → extract subdomains."""
+        import requests as _req
+        try:
+            resp = _req.get(
+                "http://web.archive.org/cdx/search/cdx",
+                params={
+                    "url": f"*.{domain}",
+                    "output": "json",
+                    "fl": "original",
+                    "collapse": "urlkey",
+                    "limit": "2000",
+                },
+                timeout=20,
+                headers={"User-Agent": "EASM-Scanner/1.0"},
+            )
+            if resp.status_code != 200:
+                if log_fn:
+                    log_fn("theharvester", f"Wayback CDX HTTP {resp.status_code}", "warn")
+                return []
+            rows = resp.json()
+            # First row is the header ["original"], skip it
+            subdomains = set()
+            for row in rows[1:]:
+                if not row:
+                    continue
+                url = row[0]
+                # Extract host from URL, strip scheme, path, port
+                host = url.split("//")[-1].split("/")[0].split(":")[0].lower()
+                if host.endswith(f".{domain}") or host == domain:
+                    subdomains.add(host)
+            return sorted(subdomains)
+        except Exception as exc:
+            if log_fn:
+                log_fn("theharvester", f"Wayback CDX Fehler: {exc}", "warn")
+            return []
+
+    # ── Finding emitters ──────────────────────────────────────────────────────
+
+    def _emit_email_findings(self, tenant_id, domain, emails, findings):
+        if not emails:
+            return
+        domain_emails = sorted(e for e in emails if e.endswith(f"@{domain}"))
+        other_emails  = sorted(e for e in emails if not e.endswith(f"@{domain}"))
+
+        if domain_emails:
+            findings.append(ToolFinding(
+                tenant_id=tenant_id, tool="theharvester",
+                category="email", severity="MEDIUM",
+                title=f"{len(domain_emails)} @{domain} E-Mails öffentlich gefunden",
+                description=(
+                    f"{len(domain_emails)} @{domain} E-Mail-Adressen auf öffentlichen Seiten "
+                    f"des Unternehmens gefunden. Sollten gegen HIBP/Stealer-Logs geprüft werden.\n"
+                    f"Beispiele: {', '.join(domain_emails[:5])}"
+                    + ("..." if len(domain_emails) > 5 else "")
+                ),
+                affected_asset=domain,
+                remediation="E-Mails gegen HIBP prüfen, Passwort-Reset-Kampagne, Security-Awareness-Training",
+                raw_data={"emails": domain_emails, "other_emails": other_emails[:20]},
+            ))
+
+        if other_emails:
+            findings.append(ToolFinding(
+                tenant_id=tenant_id, tool="theharvester",
+                category="email", severity="INFO",
+                title=f"{len(other_emails)} externe E-Mails auf {domain} gefunden",
+                description=f"Drittanbieter-E-Mails: {', '.join(other_emails[:10])}",
+                affected_asset=domain,
+                raw_data={"emails": other_emails},
+            ))
+
+    def _emit_dns_findings(self, tenant_id, domain, dns_info, findings):
+        if not dns_info:
+            return
+
+        mx    = dns_info.get("MX", [])
+        txt   = dns_info.get("TXT", [])
+        dmarc = dns_info.get("DMARC", [])  # queried from _dmarc.<domain> in _harvest_dns
+        spf   = [r for r in txt if "v=spf1" in r.lower()]
+
+        if not spf:
+            findings.append(ToolFinding(
+                tenant_id=tenant_id, tool="theharvester",
+                category="dns", severity="MEDIUM",
+                title=f"Kein SPF-Record für {domain}",
+                description="Ohne SPF-Record können Angreifer E-Mails im Namen der Domain versenden (Email Spoofing).",
+                affected_asset=domain,
+                remediation='SPF-TXT-Record setzen: "v=spf1 include:... -all"',
+            ))
+
+        if not dmarc:
+            findings.append(ToolFinding(
+                tenant_id=tenant_id, tool="theharvester",
+                category="dns", severity="MEDIUM",
+                title=f"Kein DMARC-Record für {domain}",
+                description="Ohne DMARC können gefälschte E-Mails der Domain nicht abgewiesen werden.",
+                affected_asset=domain,
+                remediation=f'DMARC-TXT-Record für _dmarc.{domain} setzen: "v=DMARC1; p=reject; ..."',
+            ))
+
+        if mx:
+            findings.append(ToolFinding(
+                tenant_id=tenant_id, tool="theharvester",
+                category="dns", severity="INFO",
+                title=f"MX-Records: {domain}",
+                description=f"E-Mail-Server: {', '.join(mx[:5])}",
+                affected_asset=domain,
+                raw_data={"mx": mx, "spf": spf, "dmarc": dmarc,
+                          "ns": dns_info.get("NS", [])},
+            ))
+
+    def _emit_subdomain_findings(self, tenant_id, domain, subdomains,
+                                  crtsh_count: int, wb_count: int, findings):
+        if not subdomains:
+            return
+        sources = []
+        if crtsh_count:
+            sources.append(f"crt.sh={crtsh_count}")
+        if wb_count:
+            sources.append(f"wayback={wb_count}")
+        source_note = f" ({', '.join(sources)})" if sources else ""
+        findings.append(ToolFinding(
+            tenant_id=tenant_id, tool="theharvester",
+            category="subdomain", severity="LOW",
+            title=f"{len(subdomains)} Subdomains via OSINT{source_note}",
+            description=(
+                f"{len(subdomains)} Subdomains für {domain} in öffentlichen Quellen gefunden.\n"
+                f"Hosts: {', '.join(subdomains[:15])}"
+                + ("..." if len(subdomains) > 15 else "")
+            ),
+            affected_asset=domain,
+            remediation="Subdomains auf Notwendigkeit und Sicherheit prüfen",
+            raw_data={"subdomains": subdomains, "sources": sources},
+        ))
 
 
 # ═══════════════════════════════════════════════════════════════════════════════

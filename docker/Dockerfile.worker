@@ -1,6 +1,7 @@
 # =============================================================================
 # Dockerfile.worker — Celery Worker
-# Enthält: nuclei, subfinder, httpx, naabu, theHarvester, Python, alle Dependencies
+# Enthält: nuclei, subfinder, httpx, naabu, Python, alle Dependencies
+# theHarvester: native Python implementation (dnspython + requests) — kein Binary
 # =============================================================================
 
 # Runtime base
@@ -54,25 +55,6 @@ RUN ARCH="$(dpkg --print-architecture)" && \
     mv /tmp/naabu/naabu /usr/local/bin/naabu && \
     chmod +x /usr/local/bin/naabu && \
     rm -rf /tmp/nuclei* /tmp/subfinder* /tmp/httpx* /tmp/naabu*
-
-# theHarvester — install from PyPI (no git clone = no GitHub access needed at
-# build time).  Use --no-deps to skip heavy optional deps (playwright, censys,
-# shodan) that require API keys or fail to build in slim containers.
-# All required runtime deps listed explicitly.
-RUN pip install --no-cache-dir --no-deps theHarvester==4.8.0 \
-    && pip install --no-cache-dir \
-       aiodns \
-       aiomultiprocess \
-       aiohttp \
-       beautifulsoup4 \
-       dnspython \
-       lxml \
-       netaddr \
-       python-dateutil \
-       requests \
-       retrying \
-       ujson \
-    && python -c "from theHarvester.theHarvester import main; print('theHarvester 4.8.0 OK')"
 
 # Python dependencies
 WORKDIR /app
