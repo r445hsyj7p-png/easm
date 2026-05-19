@@ -88,6 +88,29 @@ def tool_path(name: str) -> str | None:
     return shutil.which(name)
 
 
+def _verify_executable(path: str) -> tuple[bool, str]:
+    """Try to exec the binary with a harmless flag to confirm it actually runs.
+
+    shutil.which() only checks file existence and X_OK permission.  The OS may
+    still return ENOENT if the ELF PT_INTERP (dynamic linker) is missing, the
+    file is a broken symlink, or a required shared library is absent.
+
+    Returns (ok, diagnostic_message).
+    """
+    try:
+        subprocess.run([path, "-version"], capture_output=True, timeout=5)
+        return True, ""
+    except FileNotFoundError:
+        real = os.path.realpath(path)
+        exists = os.path.exists(real)
+        return False, (
+            f"{path} → {real} (exists={exists}) nicht ausführbar "
+            f"(defekter Symlink / fehlender ELF-Interpreter / falsche Architektur)"
+        )
+    except Exception:
+        return True, ""  # timeout or version flag not supported — binary is probably fine
+
+
 # ═══════════════════════════════════════════════════════════════════════════════
 # ADAPTER 1: SUBFINDER
 # Subdomain-Discovery via 50+ passive Quellen + Bruteforce
@@ -142,6 +165,11 @@ class SubfinderAdapter:
         """
         _binary_path = tool_path(self.binary)
         _avail = _binary_path is not None
+        if _avail:
+            _ok, _diag = _verify_executable(_binary_path)
+            if not _ok:
+                _binary_path = None
+                _avail = False
         if log_fn:
             log_fn("subfinder", f"binary {'verfügbar' if _avail else 'NICHT gefunden — Docker-Fallback'}"
                    + (f" ({_binary_path})" if _avail else ""), "info" if _avail else "warn")
@@ -366,6 +394,11 @@ class NaabuAdapter:
         """
         _binary_path = tool_path(self.binary)
         _avail = _binary_path is not None
+        if _avail:
+            _ok, _diag = _verify_executable(_binary_path)
+            if not _ok:
+                _binary_path = None
+                _avail = False
         if log_fn:
             log_fn("naabu", f"binary {'verfügbar' if _avail else 'NICHT gefunden — Docker-Fallback'}"
                    + (f" ({_binary_path})" if _avail else ""), "info" if _avail else "warn")
@@ -795,6 +828,11 @@ class HTTPXAdapter:
         """
         _binary_path = tool_path(self.binary)
         _avail = _binary_path is not None
+        if _avail:
+            _ok, _diag = _verify_executable(_binary_path)
+            if not _ok:
+                _binary_path = None
+                _avail = False
         if log_fn:
             log_fn("httpx", f"binary {'verfügbar' if _avail else 'NICHT gefunden — Docker-Fallback'}"
                    + (f" ({_binary_path})" if _avail else ""), "info" if _avail else "warn")
@@ -1027,6 +1065,14 @@ class NucleiAdapter:
         # even when Celery workers inherit a different PATH than the Python process.
         _binary_path = shutil.which(self.binary)
         _avail = _binary_path is not None
+
+        if _avail:
+            _ok, _diag = _verify_executable(_binary_path)
+            if not _ok:
+                if log_fn:
+                    log_fn("nuclei", f"{_diag} — Docker/Python-Fallback aktiv", "warn")
+                _binary_path = None
+                _avail = False
         _home = os.path.expanduser("~")
         _tmpl_dir = os.path.join(_home, "nuclei-templates")
         _tmpl_exists = os.path.isdir(_tmpl_dir)
