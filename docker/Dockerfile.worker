@@ -55,12 +55,25 @@ RUN ARCH="$(dpkg --print-architecture)" && \
     chmod +x /usr/local/bin/naabu && \
     rm -rf /tmp/nuclei* /tmp/subfinder* /tmp/httpx* /tmp/naabu*
 
-# theHarvester — install with full dependency resolution (no --no-deps).
-# Previous --no-deps approach caused silent breakage when transitive deps
-# (aiomultiprocess, etc.) were missing.  Let pip resolve everything.
+# theHarvester — install with --no-deps to avoid heavy optional dependencies
+# (playwright, censys, shodan) that fail to build in slim containers or require
+# API keys.  All required runtime deps listed explicitly including aiomultiprocess
+# which was missing from the previous installation and caused ImportError.
 RUN git clone --depth 1 --branch 4.8.0 \
       https://github.com/laramies/theHarvester.git /opt/theHarvester \
-    && pip install --no-cache-dir /opt/theHarvester \
+    && pip install --no-cache-dir --no-deps /opt/theHarvester \
+    && pip install --no-cache-dir \
+       aiodns \
+       aiomultiprocess \
+       aiohttp \
+       beautifulsoup4 \
+       dnspython \
+       lxml \
+       netaddr \
+       python-dateutil \
+       requests \
+       retrying \
+       ujson \
     && python -c "from theHarvester.theHarvester import main; print('theHarvester 4.8.0 OK')"
 
 # Python dependencies
