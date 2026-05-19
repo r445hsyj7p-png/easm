@@ -1048,12 +1048,72 @@ def _log_scan_event(job_id: str, tool: str, msg: str, level: str = "info"):
                 pass
 
 
+def _geoip_batch(ips: list) -> dict:
+    """
+    Batch-GeoIP via ip-api.com (kein API-Key, 100 IPs/Request, 45 req/min).
+    Returns: {ip_str -> {"city": str, "country": str, "lat": float, "lng": float}}
+    Private/reservierte IPs werden herausgefiltert (ip-api gibt status:fail zurück).
+    """
+    import urllib.request as _ur
+    import urllib.error as _ue
+    import json as _j
+    import ipaddress as _ipa
+
+    if not ips:
+        return {}
+
+    # Filter private/reserved ranges — ip-api.com returns status:fail for these
+    public_ips = []
+    for ip in ips:
+        try:
+            if not _ipa.ip_address(ip).is_private:
+                public_ips.append(ip)
+        except ValueError:
+            pass
+
+    if not public_ips:
+        return {}
+
+    # Batch endpoint: POST http://ip-api.com/batch (HTTP only on free tier)
+    payload = json.dumps([
+        {"query": ip, "fields": "status,city,country,countryCode,lat,lon,query"}
+        for ip in public_ips[:100]
+    ]).encode()
+
+    try:
+        req = _ur.Request(
+            "http://ip-api.com/batch",
+            data=payload,
+            headers={"Content-Type": "application/json", "User-Agent": "EASM-Scanner/1.0"},
+        )
+        with _ur.urlopen(req, timeout=10) as r:
+            rows = _j.loads(r.read())
+    except Exception:
+        return {}
+
+    geo_map: dict = {}
+    for row in rows:
+        if row.get("status") != "success":
+            continue
+        ip = row.get("query", "")
+        if not ip:
+            continue
+        geo_map[ip] = {
+            "city":    row.get("city", ""),
+            "country": row.get("countryCode", ""),
+            "lat":     float(row.get("lat", 0)),
+            "lng":     float(row.get("lon", 0)),
+        }
+    return geo_map
+
+
 def _resolve_assets(fqdns: list, hosts: list) -> tuple:
     """
     Resolves IPs for FQDNs and looks up org/ASN via RIPE RDAP for unique IPs.
-    Returns (ip_map, rdap_map) where:
+    Returns (ip_map, rdap_map, geo_map) where:
       ip_map:   {fqdn_or_host -> ip_str or None}
       rdap_map: {ip_str -> (org_str, asn_int)}
+      geo_map:  {ip_str -> {"city", "country", "lat", "lng"}}
     """
     import socket as _sock
     from concurrent.futures import ThreadPoolExecutor as _TPE, as_completed as _ac
@@ -1184,7 +1244,14 @@ def _resolve_assets(fqdns: list, hosts: list) -> tuple:
         except Exception:
             pass
 
-    return ip_map, rdap_map
+    # GeoIP — run after RDAP/PTR so we have the final unique_ips list
+    geo_map: dict = {}
+    try:
+        geo_map = _geoip_batch(unique_ips)
+    except Exception:
+        pass
+
+    return ip_map, rdap_map, geo_map
 
 
 def _save_report(tenant_id: str, job_id: str, report):
@@ -1209,8 +1276,8 @@ def _save_report(tenant_id: str, job_id: str, report):
             except (OSError, TypeError):
                 return None
 
-    # Resolve IPs + org/ASN BEFORE opening DB connection (RDAP calls take up to 80s)
-    _ip_map, _rdap_map = _resolve_assets(
+    # Resolve IPs + org/ASN + GeoIP BEFORE opening DB connection (RDAP calls take up to 80s)
+    _ip_map, _rdap_map, _geo_map = _resolve_assets(
         list(report.subdomains_discovered),
         list(report.open_ports.keys()),
     )
@@ -1359,7 +1426,7 @@ def _save_report(tenant_id: str, job_id: str, report):
                     "org":      (_rdap_map.get(_ip_map.get(fqdn), ("", 0))[0] or "—"),
                     "asn":      (_rdap_map.get(_ip_map.get(fqdn), ("", 0))[1] or 0),
                     "netblock": "—",
-                    "country":  "—",
+                    "country":  (_geo_map.get(_ip_map.get(fqdn), {}).get("country") or "—"),
                     "risk":     _fqdn_risk.get(fqdn, "LOW"),
                 }
                 for fqdn in report.subdomains_discovered
@@ -1392,10 +1459,43 @@ def _save_report(tenant_id: str, job_id: str, report):
                 )
             ]
 
+            # Geo Distribution — aggregate IPs by city, escalate risk per FQDN
+            _geo_buckets: dict = {}
+            for _fqdn in report.subdomains_discovered:
+                _ip  = _ip_map.get(_fqdn)
+                _geo = _geo_map.get(_ip) if _ip else None
+                if not _geo or not _geo.get("city"):
+                    continue
+                _key = (_geo["city"], _geo["country"])
+                _bucket = _geo_buckets.setdefault(_key, {
+                    "city":    _geo["city"],
+                    "country": _geo["country"],
+                    "lat":     _geo["lat"],
+                    "lng":     _geo["lng"],
+                    "ips":     set(),
+                    "risk":    "LOW",
+                })
+                _bucket["ips"].add(_ip)
+                _fqdn_sev = _fqdn_risk.get(_fqdn, "LOW")
+                if _sev_ord.get(_fqdn_sev, 0) > _sev_ord.get(_bucket["risk"], 0):
+                    _bucket["risk"] = _fqdn_sev
+
+            geo_assets = [
+                {
+                    "city":     _b["city"],
+                    "country":  _b["country"],
+                    "lat":      _b["lat"],
+                    "lng":      _b["lng"],
+                    "ip_count": len(_b["ips"]),
+                    "risk":     _b["risk"],
+                }
+                for _b in sorted(_geo_buckets.values(), key=lambda x: -len(x["ips"]))
+            ]
+
             intel_data = {
                 "hosting_orgs": hosting_orgs,
                 "fqdn_table":   fqdn_table,
-                "geo_assets":   [],
+                "geo_assets":   geo_assets,
             }
             cur.execute("""
                 INSERT INTO intel_snapshots (id, tenant_id, data, created_at)
