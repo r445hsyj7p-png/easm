@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { toast } from "sonner";
 import { Settings, Globe, Shield, Calendar, RefreshCw, Key } from "lucide-react";
-import { T } from "../theme";
+import { T, alpha } from "../theme";
 import { Card, CardHeader, KpiCard, PageLoading, Btn } from "../components/ui/index";
 import { useApp } from "../context/AppContext";
 import { apiFetch } from "../api/client";
@@ -27,7 +27,18 @@ export default function SettingsPage() {
     if (!domain.trim()) return;
     setSaving(true);
     try {
-      await apiFetch(`/tenants/${tenantId}`, { method: "PATCH", body: { domain: domain.trim() } });
+      // List existing domains to decide create vs update
+      const existing = await apiFetch(`/tenants/${tenantId}/domains`);
+      const domains  = existing.domains ?? existing;
+      if (domains.length > 0) {
+        await apiFetch(`/tenants/${tenantId}/domains/${domains[0].id}`, {
+          method: "PATCH", body: { domain: domain.trim() },
+        });
+      } else {
+        await apiFetch(`/tenants/${tenantId}/domains`, {
+          method: "POST", body: { domain: domain.trim() },
+        });
+      }
       toast.success("Domain gespeichert");
       setEditDomain(false);
       setDomain("");
@@ -40,7 +51,10 @@ export default function SettingsPage() {
   const handleSaveSchedule = async () => {
     setSaving(true);
     try {
-      await apiFetch(`/tenants/${tenantId}`, { method: "PATCH", body: { scan_schedule: schedule } });
+      const current = await apiFetch(`/tenants/${tenantId}/settings`);
+      await apiFetch(`/tenants/${tenantId}/settings`, {
+        method: "PUT", body: { ...current, scan_schedule: schedule },
+      });
       toast.success("Scan-Intervall gespeichert");
       setEditSchedule(false);
       reload();
@@ -91,7 +105,7 @@ export default function SettingsPage() {
               onKeyDown={e => e.key === "Enter" && handleSaveDomain()}
               placeholder="z.B. beispiel.de"
               style={{
-                background: T.bg3, border: `1px solid ${T.accent}60`, borderRadius: 6,
+                background: T.bg3, border: `1px solid ${T.borderFocus}`, borderRadius: 6,
                 padding: "8px 12px", fontFamily: T.font, fontSize: 12, color: T.text0,
                 outline: "none", width: 280,
               }}
@@ -113,7 +127,7 @@ export default function SettingsPage() {
               value={schedule}
               onChange={e => setSchedule(e.target.value)}
               style={{
-                background: T.bg3, border: `1px solid ${T.accent}60`, borderRadius: 6,
+                background: T.bg3, border: `1px solid ${T.borderFocus}`, borderRadius: 6,
                 padding: "8px 12px", fontFamily: T.fontSans, fontSize: 12, color: T.text0,
                 outline: "none", width: 220, cursor: "pointer",
               }}

@@ -1,7 +1,7 @@
-import { T, SEV } from "../../theme";
+import { T, SEV, alpha } from "../../theme";
 
 /* ── Severity badge ──────────────────────────────────────────────────────── */
-export function SevBadge({ sev, small }) {
+export function SevBadge({ sev, small, style }) {
   const s = SEV[sev] || SEV.INFO;
   return (
     <span style={{
@@ -10,6 +10,7 @@ export function SevBadge({ sev, small }) {
       color: s.color, background: s.bg, border: `1px solid ${s.border}`,
       padding: small ? "0 5px" : "1px 7px", borderRadius: 3, letterSpacing: "0.04em",
       whiteSpace: "nowrap", lineHeight: small ? "16px" : "18px",
+      ...style,
     }}>{sev}</span>
   );
 }
@@ -17,7 +18,7 @@ export function SevBadge({ sev, small }) {
 /* ── Status badge ────────────────────────────────────────────────────────── */
 const STATUS_STYLE = {
   open:     { color: T.critical, bg: T.criticalBg, border: T.criticalBorder },
-  closed:   { color: T.accent,   bg: T.accent3,    border: `${T.accent}30`  },
+  closed:   { color: T.accent,   bg: T.accent3,    border: alpha(T.accent, 19) },
   accepted: { color: T.medium,   bg: T.mediumBg,   border: T.mediumBorder   },
 };
 export function StatusBadge({ status }) {
@@ -157,7 +158,7 @@ export function FilterPill({ label, active, color, onClick }) {
   return (
     <button onClick={onClick} style={{
       padding: "4px 10px", borderRadius: 20, fontFamily: T.font, fontSize: 10, fontWeight: 700,
-      background: active ? (color ? `${color}20` : T.bg4) : "transparent",
+      background: active ? (color ? alpha(color, 13) : T.bg4) : "transparent",
       border: `1px solid ${active ? (color || T.accent) : T.border}`,
       color: active ? (color || T.accent) : T.text3,
       cursor: "pointer", transition: "all 0.12s", whiteSpace: "nowrap",
@@ -186,9 +187,11 @@ export function SearchInput({ value, onChange, placeholder, width = 220 }) {
 /* ── Primary button ──────────────────────────────────────────────────────── */
 export function Btn({ children, onClick, variant = "default", disabled, style }) {
   const styles = {
-    primary: { background: T.accent, color: "#052e16", border: "none" },
-    danger:  { background: T.criticalBg, color: T.critical, border: `1px solid ${T.criticalBorder}` },
-    default: { background: T.bg3, color: T.text1, border: `1px solid ${T.border}` },
+    primary:   { background: T.accent, color: "var(--background)", border: "none" },
+    secondary: { background: T.bg3, color: T.text1, border: `1px solid ${T.border}` },
+    danger:    { background: T.criticalBg, color: T.critical, border: `1px solid ${T.criticalBorder}` },
+    ghost:     { background: "transparent", color: T.text2, border: `1px solid ${T.border}` },
+    default:   { background: T.bg3, color: T.text1, border: `1px solid ${T.border}` },
   };
   return (
     <button onClick={onClick} disabled={disabled} style={{
