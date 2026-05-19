@@ -605,11 +605,34 @@ class TheHarvesterAdapter:
             ]
 
             rc, stdout, stderr = _run(cmd, timeout=300)
-            if log_fn:
-                if rc != 0:
-                    log_fn("theharvester", f"rc={rc} | stderr: {(stderr or '').strip()[:200]}", "error")
-                else:
-                    log_fn("theharvester", f"rc=0, Ausgabe geparst", "info")
+            _stderr_clean = (stderr or "").strip()
+
+            if rc != 0:
+                # Log full stderr in chunks so no part of the traceback is lost
+                if log_fn and _stderr_clean:
+                    for _i in range(0, min(len(_stderr_clean), 3200), 400):
+                        log_fn("theharvester", f"stderr: {_stderr_clean[_i:_i+400]}", "error")
+
+                # Binary crashed (e.g. ImportError from optional dependency) →
+                # retry transparently with the python -m module variant
+                if "Traceback" in _stderr_clean or "ImportError" in _stderr_clean or "ModuleNotFoundError" in _stderr_clean:
+                    _py_path = tool_path("python") or tool_path("python3") or "python3"
+                    _module_cmd = [_py_path, "-m", "theHarvester",
+                                   "-d", domain, "-b", sources, "-l", str(limit),
+                                   "-f", output_file.replace(".json", "")]
+                    if log_fn:
+                        log_fn("theharvester",
+                               "binary Import-Fehler — fallback auf python -m theHarvester", "warn")
+                    rc2, stdout2, stderr2 = _run(_module_cmd, timeout=300)
+                    if rc2 == 0:
+                        rc, stdout, stderr = rc2, stdout2, stderr2
+                    elif log_fn:
+                        log_fn("theharvester",
+                               f"module fallback ebenfalls rc={rc2}: {(stderr2 or '').strip()[:400]}", "error")
+            else:
+                if log_fn:
+                    log_fn("theharvester", "rc=0, Ausgabe geparst", "info")
+
             return self._parse_json(tenant_id, domain, output_file, stdout)
 
         finally:
