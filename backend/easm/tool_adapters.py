@@ -78,6 +78,16 @@ def tool_available(name: str) -> bool:
     return shutil.which(name) is not None
 
 
+def tool_path(name: str) -> str | None:
+    """Gibt den absoluten Pfad eines Tools zurück oder None.
+
+    Prefer over tool_available() when building subprocess commands — using the
+    full path avoids FileNotFoundError in Celery workers that inherit a PATH
+    different from the one Python's shutil.which() scanned at import time.
+    """
+    return shutil.which(name)
+
+
 # ═══════════════════════════════════════════════════════════════════════════════
 # ADAPTER 1: SUBFINDER
 # Subdomain-Discovery via 50+ passive Quellen + Bruteforce
@@ -130,14 +140,16 @@ class SubfinderAdapter:
         Returns:
             Liste von ToolFinding-Objekten
         """
-        _avail = tool_available(self.binary)
+        _binary_path = tool_path(self.binary)
+        _avail = _binary_path is not None
         if log_fn:
-            log_fn("subfinder", f"binary {'verfügbar' if _avail else 'NICHT gefunden — Docker-Fallback'}", "info" if _avail else "warn")
+            log_fn("subfinder", f"binary {'verfügbar' if _avail else 'NICHT gefunden — Docker-Fallback'}"
+                   + (f" ({_binary_path})" if _avail else ""), "info" if _avail else "warn")
         if not _avail:
             return self._fallback_docker(tenant_id, domain, log_fn)
 
         cmd = [
-            self.binary,
+            _binary_path,
             "-d", domain,
             "-json",
             "-silent",
@@ -352,9 +364,11 @@ class NaabuAdapter:
             nmap_integration: Nmap für Service-Detection nach Port-Scan
             log_fn: Optionale Log-Funktion (tool, msg, level)
         """
-        _avail = tool_available(self.binary)
+        _binary_path = tool_path(self.binary)
+        _avail = _binary_path is not None
         if log_fn:
-            log_fn("naabu", f"binary {'verfügbar' if _avail else 'NICHT gefunden — Docker-Fallback'}", "info" if _avail else "warn")
+            log_fn("naabu", f"binary {'verfügbar' if _avail else 'NICHT gefunden — Docker-Fallback'}"
+                   + (f" ({_binary_path})" if _avail else ""), "info" if _avail else "warn")
 
         with tempfile.NamedTemporaryFile(mode='w', suffix='.txt',
                                           delete=False) as tf:
@@ -363,7 +377,7 @@ class NaabuAdapter:
 
         try:
             cmd = [
-                self.binary if _avail else "naabu",
+                _binary_path if _avail else "naabu",
                 "-list", target_file,
                 "-json",
                 "-silent",
@@ -543,8 +557,9 @@ class TheHarvesterAdapter:
         with tempfile.NamedTemporaryFile(suffix=".json", delete=False) as tf:
             output_file = tf.name
 
-        # Try binary first, then python -m theHarvester as module fallback
-        _binary_avail = tool_available("theHarvester")
+        # Try binary first (full path), then python -m theHarvester as module fallback
+        _binary_path = tool_path("theHarvester")
+        _binary_avail = _binary_path is not None
         _module_avail = False
         if not _binary_avail:
             try:
@@ -558,13 +573,13 @@ class TheHarvesterAdapter:
                 pass
 
         _avail = _binary_avail or _module_avail
-        _invoke = (["theHarvester"] if _binary_avail
+        _invoke = ([_binary_path] if _binary_avail
                    else ["python", "-m", "theHarvester"] if _module_avail
                    else None)
 
         if log_fn:
             if _binary_avail:
-                log_fn("theharvester", "binary verfügbar (/usr/local/bin/theHarvester)", "info")
+                log_fn("theharvester", f"binary verfügbar ({_binary_path})", "info")
             elif _module_avail:
                 log_fn("theharvester", "binary nicht gefunden, nutze python -m theHarvester", "warn")
             else:
@@ -755,9 +770,11 @@ class HTTPXAdapter:
             threads: Parallelität
             log_fn: Optionale Log-Funktion (tool, msg, level)
         """
-        _avail = tool_available(self.binary)
+        _binary_path = tool_path(self.binary)
+        _avail = _binary_path is not None
         if log_fn:
-            log_fn("httpx", f"binary {'verfügbar' if _avail else 'NICHT gefunden — Docker-Fallback'}", "info" if _avail else "warn")
+            log_fn("httpx", f"binary {'verfügbar' if _avail else 'NICHT gefunden — Docker-Fallback'}"
+                   + (f" ({_binary_path})" if _avail else ""), "info" if _avail else "warn")
 
         with tempfile.NamedTemporaryFile(mode='w', suffix='.txt',
                                           delete=False) as tf:
@@ -766,7 +783,7 @@ class HTTPXAdapter:
 
         try:
             cmd = [
-                self.binary if _avail else "httpx",
+                _binary_path if _avail else "httpx",
                 "-l", input_file,
                 "-json",
                 "-silent",
@@ -983,7 +1000,10 @@ class NucleiAdapter:
             bulk_size: Parallele Targets
             log_fn: Optionale Log-Funktion (tool, msg, level)
         """
-        _avail = tool_available(self.binary)
+        # Use full absolute path from shutil.which so subprocess can locate the binary
+        # even when Celery workers inherit a different PATH than the Python process.
+        _binary_path = shutil.which(self.binary)
+        _avail = _binary_path is not None
         _home = os.path.expanduser("~")
         _tmpl_dir = os.path.join(_home, "nuclei-templates")
         _tmpl_exists = os.path.isdir(_tmpl_dir)
@@ -994,8 +1014,9 @@ class NucleiAdapter:
             _tmpl_has_files = False
         if log_fn:
             log_fn("nuclei",
-                   f"binary {'verfügbar' if _avail else 'NICHT gefunden'} | "
-                   f"templates: {'vorhanden' if _tmpl_has_files else 'FEHLEN'} in {_tmpl_dir}",
+                   f"binary {'verfügbar' if _avail else 'NICHT gefunden'}"
+                   + (f" ({_binary_path})" if _avail else "")
+                   + f" | templates: {'vorhanden' if _tmpl_has_files else 'FEHLEN'} in {_tmpl_dir}",
                    "info" if _avail else "error")
 
         with tempfile.NamedTemporaryFile(mode='w', suffix='.txt', delete=False) as tf:
@@ -1012,7 +1033,7 @@ class NucleiAdapter:
                 tags = "api,exposure,misconfig,default-logins,mcp,cve,tech"
 
             cmd = [
-                self.binary if _avail else "nuclei",
+                _binary_path if _avail else self.binary,
                 "-l", target_file,
                 "-json",
                 "-severity", severity_filter,
@@ -1430,7 +1451,8 @@ class RampartsAdapter:
             use_llm: LLM-gestützte Analyse (braucht API-Key)
             log_fn: Optionale Log-Funktion (tool, msg, level)
         """
-        _avail = tool_available("ramparts")
+        _binary_path = tool_path("ramparts")
+        _avail = _binary_path is not None
         if log_fn:
             log_fn("ramparts", f"binary {'verfügbar' if _avail else 'NICHT gefunden — eigene MCP-Analyse'} | {len(mcp_urls)} URLs", "info" if _avail else "warn")
 
@@ -1439,7 +1461,7 @@ class RampartsAdapter:
         for url in mcp_urls:
             # Primär: ramparts CLI wenn installiert
             if _avail:
-                all_findings += self._run_ramparts_cli(tenant_id, url, use_llm)
+                all_findings += self._run_ramparts_cli(tenant_id, url, use_llm, _binary_path)
             else:
                 # Fallback: Eigene MCP-Security-Analyse
                 all_findings += self._run_own_analysis(tenant_id, url)
@@ -1450,9 +1472,9 @@ class RampartsAdapter:
         return all_findings
 
     def _run_ramparts_cli(self, tenant_id: str, url: str,
-                           use_llm: bool) -> list[ToolFinding]:
+                           use_llm: bool, binary_path: str = "ramparts") -> list[ToolFinding]:
         """Ramparts CLI ausführen"""
-        cmd = ["ramparts", "scan", url, "--json"]
+        cmd = [binary_path, "scan", url, "--json"]
         if use_llm:
             cmd += ["--llm-analysis"]
 
