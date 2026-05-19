@@ -566,9 +566,9 @@ class TheHarvesterAdapter:
     Quellen:
       - DNS: MX / NS / TXT / SPF / DMARC → E-Mail-Infrastruktur, Dienste
       - crt.sh: Certificate Transparency → Subdomains
+      - Wayback CDX API: historische Crawl-URLs → zusätzliche Subdomains
       - HTTP-Scraping: Website, robots.txt, sitemap.xml, /contact, /about
         → E-Mail-Adressen per Regex
-      - Wayback-CDX-API: historische URLs → zusätzliche Subdomains / Pfade
 
     Abhängigkeiten: dnspython, requests — beide bereits in requirements.txt.
     """
@@ -582,27 +582,34 @@ class TheHarvesterAdapter:
         "/team", "/imprint", "/impressum", "/legal",
         "/robots.txt", "/sitemap.xml",
     ]
-    # DNS record types that reveal email infrastructure
+    # DNS record types queried on the apex domain
     _DNS_TYPES = ["MX", "NS", "TXT", "SOA"]
 
     def run(self, tenant_id: str, domain: str,
-            limit: int = 500, use_full_sources: bool = False,
+            limit: int = 500,        # unused — kept for API compatibility
+            use_full_sources: bool = False,  # unused — kept for API compatibility
             log_fn=None) -> list[ToolFinding]:
         if log_fn:
             log_fn("theharvester", f"native Python OSINT für {domain}", "info")
 
-        emails    = self._harvest_emails(domain, log_fn)
-        dns_info  = self._harvest_dns(domain, log_fn)
-        subdomains = self._harvest_crtsh(domain, log_fn)
+        emails     = self._harvest_emails(domain, log_fn)
+        dns_info   = self._harvest_dns(domain, log_fn)
+        crtsh_subs = self._harvest_crtsh(domain, log_fn)
+        wb_subs    = self._harvest_wayback(domain, log_fn)
+        subdomains = sorted(set(crtsh_subs) | set(wb_subs))
 
         findings = []
         self._emit_email_findings(tenant_id, domain, emails, findings)
         self._emit_dns_findings(tenant_id, domain, dns_info, findings)
-        self._emit_subdomain_findings(tenant_id, domain, subdomains, findings)
+        self._emit_subdomain_findings(tenant_id, domain, subdomains,
+                                      crtsh_count=len(crtsh_subs),
+                                      wb_count=len(wb_subs),
+                                      findings=findings)
 
         if log_fn:
             log_fn("theharvester",
-                   f"{len(emails)} E-Mails | {len(subdomains)} crt.sh-Subdomains "
+                   f"{len(emails)} E-Mails | {len(subdomains)} Subdomains "
+                   f"(crt.sh={len(crtsh_subs)}, wayback={len(wb_subs)}) "
                    f"| {sum(len(v) for v in dns_info.values())} DNS-Records", "info")
         return findings
 
@@ -610,6 +617,9 @@ class TheHarvesterAdapter:
 
     def _harvest_emails(self, domain: str, log_fn) -> set:
         import requests as _req
+        import urllib3
+        urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+
         emails = set()
         session = _req.Session()
         session.headers["User-Agent"] = "Mozilla/5.0 EASM-Scanner/1.0"
@@ -622,9 +632,9 @@ class TheHarvesterAdapter:
                                        verify=False)
                     found = self._EMAIL_RE.findall(resp.text)
                     emails.update(e.lower() for e in found)
-                    break  # https succeeded — skip http
+                    break  # scheme succeeded (even 404) — don't retry with http
                 except Exception:
-                    continue
+                    continue  # connection refused / timeout — try next scheme
 
         # Filter out false positives: image names, file extensions, etc.
         emails = {
@@ -642,15 +652,44 @@ class TheHarvesterAdapter:
             import dns.resolver as _res
             import dns.exception as _exc
         except ImportError:
+            if log_fn:
+                log_fn("theharvester", "dnspython nicht verfügbar — DNS-Phase übersprungen", "warn")
             return {}
 
         records: dict[str, list[str]] = {}
+
+        # Standard records on apex domain
         for rtype in self._DNS_TYPES:
             try:
                 answers = _res.resolve(domain, rtype, lifetime=10)
                 records[rtype] = [str(r) for r in answers]
-            except (_exc.DNSException, Exception):
-                pass
+                if log_fn:
+                    log_fn("theharvester", f"DNS {rtype}: {len(records[rtype])} Records", "debug")
+            except _exc.NXDOMAIN:
+                if log_fn:
+                    log_fn("theharvester", f"DNS {rtype}: NXDOMAIN für {domain}", "debug")
+            except _exc.NoAnswer:
+                pass  # record type simply not set — not an error
+            except Exception as exc:
+                if log_fn:
+                    log_fn("theharvester", f"DNS {rtype} Fehler: {exc}", "debug")
+
+        # DMARC is always on _dmarc.<domain>, never on the apex domain
+        dmarc_host = f"_dmarc.{domain}"
+        try:
+            dmarc_answers = _res.resolve(dmarc_host, "TXT", lifetime=10)
+            records["DMARC"] = [str(r) for r in dmarc_answers]
+            if log_fn:
+                log_fn("theharvester", f"DMARC-Record auf {dmarc_host} gefunden", "debug")
+        except _exc.NXDOMAIN:
+            records["DMARC"] = []  # subdomain does not exist → no DMARC
+        except _exc.NoAnswer:
+            records["DMARC"] = []  # subdomain exists but no TXT → no DMARC
+        except Exception as exc:
+            records["DMARC"] = []
+            if log_fn:
+                log_fn("theharvester", f"DMARC-Abfrage Fehler ({dmarc_host}): {exc}", "debug")
+
         return records
 
     # ── Certificate Transparency (crt.sh) ────────────────────────────────────
@@ -665,6 +704,8 @@ class TheHarvesterAdapter:
                 headers={"User-Agent": "EASM-Scanner/1.0"},
             )
             if resp.status_code != 200:
+                if log_fn:
+                    log_fn("theharvester", f"crt.sh HTTP {resp.status_code}", "warn")
                 return []
             subdomains = set()
             for entry in resp.json():
@@ -674,7 +715,48 @@ class TheHarvesterAdapter:
                     if n.endswith(f".{domain}") or n == domain:
                         subdomains.add(n.lower())
             return sorted(subdomains)
-        except Exception:
+        except Exception as exc:
+            if log_fn:
+                log_fn("theharvester", f"crt.sh Fehler: {exc}", "warn")
+            return []
+
+    # ── Wayback CDX API ───────────────────────────────────────────────────────
+
+    def _harvest_wayback(self, domain: str, log_fn) -> list[str]:
+        """Query the Wayback Machine CDX API for historical URLs → extract subdomains."""
+        import requests as _req
+        try:
+            resp = _req.get(
+                "http://web.archive.org/cdx/search/cdx",
+                params={
+                    "url": f"*.{domain}",
+                    "output": "json",
+                    "fl": "original",
+                    "collapse": "urlkey",
+                    "limit": "2000",
+                },
+                timeout=20,
+                headers={"User-Agent": "EASM-Scanner/1.0"},
+            )
+            if resp.status_code != 200:
+                if log_fn:
+                    log_fn("theharvester", f"Wayback CDX HTTP {resp.status_code}", "warn")
+                return []
+            rows = resp.json()
+            # First row is the header ["original"], skip it
+            subdomains = set()
+            for row in rows[1:]:
+                if not row:
+                    continue
+                url = row[0]
+                # Extract host from URL, strip scheme, path, port
+                host = url.split("//")[-1].split("/")[0].split(":")[0].lower()
+                if host.endswith(f".{domain}") or host == domain:
+                    subdomains.add(host)
+            return sorted(subdomains)
+        except Exception as exc:
+            if log_fn:
+                log_fn("theharvester", f"Wayback CDX Fehler: {exc}", "warn")
             return []
 
     # ── Finding emitters ──────────────────────────────────────────────────────
@@ -684,7 +766,6 @@ class TheHarvesterAdapter:
             return
         domain_emails = sorted(e for e in emails if e.endswith(f"@{domain}"))
         other_emails  = sorted(e for e in emails if not e.endswith(f"@{domain}"))
-        all_emails    = domain_emails + other_emails
 
         if domain_emails:
             findings.append(ToolFinding(
@@ -716,13 +797,10 @@ class TheHarvesterAdapter:
         if not dns_info:
             return
 
-        mx = dns_info.get("MX", [])
-        txt = dns_info.get("TXT", [])
-
-        # SPF / DMARC check
-        spf   = [r for r in txt if "v=spf1"   in r.lower()]
-        dmarc_domain = f"_dmarc.{domain}"
-        dmarc = [r for r in txt if "v=dmarc1" in r.lower()]
+        mx    = dns_info.get("MX", [])
+        txt   = dns_info.get("TXT", [])
+        dmarc = dns_info.get("DMARC", [])  # queried from _dmarc.<domain> in _harvest_dns
+        spf   = [r for r in txt if "v=spf1" in r.lower()]
 
         if not spf:
             findings.append(ToolFinding(
@@ -755,21 +833,28 @@ class TheHarvesterAdapter:
                           "ns": dns_info.get("NS", [])},
             ))
 
-    def _emit_subdomain_findings(self, tenant_id, domain, subdomains, findings):
+    def _emit_subdomain_findings(self, tenant_id, domain, subdomains,
+                                  crtsh_count: int, wb_count: int, findings):
         if not subdomains:
             return
+        sources = []
+        if crtsh_count:
+            sources.append(f"crt.sh={crtsh_count}")
+        if wb_count:
+            sources.append(f"wayback={wb_count}")
+        source_note = f" ({', '.join(sources)})" if sources else ""
         findings.append(ToolFinding(
             tenant_id=tenant_id, tool="theharvester",
             category="subdomain", severity="LOW",
-            title=f"{len(subdomains)} Subdomains via Certificate Transparency",
+            title=f"{len(subdomains)} Subdomains via OSINT{source_note}",
             description=(
-                f"crt.sh-Zertifikatsdatenbank enthält {len(subdomains)} Subdomains für {domain}.\n"
+                f"{len(subdomains)} Subdomains für {domain} in öffentlichen Quellen gefunden.\n"
                 f"Hosts: {', '.join(subdomains[:15])}"
                 + ("..." if len(subdomains) > 15 else "")
             ),
             affected_asset=domain,
             remediation="Subdomains auf Notwendigkeit und Sicherheit prüfen",
-            raw_data={"subdomains": subdomains},
+            raw_data={"subdomains": subdomains, "sources": sources},
         ))
 
 
