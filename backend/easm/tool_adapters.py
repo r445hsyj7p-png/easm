@@ -696,68 +696,106 @@ class TheHarvesterAdapter:
 
     def _harvest_crtsh(self, domain: str, log_fn) -> list[str]:
         import requests as _req
-        try:
-            resp = _req.get(
-                "https://crt.sh/",
-                params={"q": f"%.{domain}", "output": "json"},
-                timeout=15,
-                headers={"User-Agent": "EASM-Scanner/1.0"},
-            )
-            if resp.status_code != 200:
+        import time as _time
+        _RETRYABLE = {502, 503, 504}
+        for attempt in range(3):
+            try:
+                resp = _req.get(
+                    "https://crt.sh/",
+                    params={"q": f"%.{domain}", "output": "json"},
+                    timeout=15,
+                    headers={"User-Agent": "EASM-Scanner/1.0"},
+                )
+                if resp.status_code == 200:
+                    subdomains = set()
+                    for entry in resp.json():
+                        name = entry.get("name_value", "")
+                        for n in name.splitlines():
+                            n = n.strip().lstrip("*.")
+                            if n.endswith(f".{domain}") or n == domain:
+                                subdomains.add(n.lower())
+                    return sorted(subdomains)
+                if resp.status_code in _RETRYABLE and attempt < 2:
+                    wait = 5 * (2 ** attempt)  # 5s, 10s
+                    if log_fn:
+                        log_fn("theharvester",
+                               f"crt.sh HTTP {resp.status_code} — Retry {attempt + 1}/3 in {wait}s",
+                               "warn")
+                    _time.sleep(wait)
+                    continue
                 if log_fn:
                     log_fn("theharvester", f"crt.sh HTTP {resp.status_code}", "warn")
                 return []
-            subdomains = set()
-            for entry in resp.json():
-                name = entry.get("name_value", "")
-                for n in name.splitlines():
-                    n = n.strip().lstrip("*.")
-                    if n.endswith(f".{domain}") or n == domain:
-                        subdomains.add(n.lower())
-            return sorted(subdomains)
-        except Exception as exc:
-            if log_fn:
-                log_fn("theharvester", f"crt.sh Fehler: {exc}", "warn")
-            return []
+            except Exception as exc:
+                if attempt < 2:
+                    wait = 5 * (2 ** attempt)
+                    if log_fn:
+                        log_fn("theharvester",
+                               f"crt.sh Fehler: {exc} — Retry {attempt + 1}/3 in {wait}s",
+                               "warn")
+                    _time.sleep(wait)
+                else:
+                    if log_fn:
+                        log_fn("theharvester", f"crt.sh Fehler nach 3 Versuchen: {exc}", "warn")
+        return []
 
     # ── Wayback CDX API ───────────────────────────────────────────────────────
 
     def _harvest_wayback(self, domain: str, log_fn) -> list[str]:
         """Query the Wayback Machine CDX API for historical URLs → extract subdomains."""
         import requests as _req
-        try:
-            resp = _req.get(
-                "http://web.archive.org/cdx/search/cdx",
-                params={
-                    "url": f"*.{domain}",
-                    "output": "json",
-                    "fl": "original",
-                    "collapse": "urlkey",
-                    "limit": "2000",
-                },
-                timeout=20,
-                headers={"User-Agent": "EASM-Scanner/1.0"},
-            )
-            if resp.status_code != 200:
+        import time as _time
+        _RETRYABLE = {502, 503, 504, 429}
+        for attempt in range(3):
+            try:
+                resp = _req.get(
+                    "http://web.archive.org/cdx/search/cdx",
+                    params={
+                        "url": f"*.{domain}",
+                        "output": "json",
+                        "fl": "original",
+                        "collapse": "urlkey",
+                        "limit": "2000",
+                    },
+                    timeout=20,
+                    headers={"User-Agent": "EASM-Scanner/1.0"},
+                )
+                if resp.status_code == 200:
+                    rows = resp.json()
+                    # First row is the header ["original"], skip it
+                    subdomains = set()
+                    for row in rows[1:]:
+                        if not row:
+                            continue
+                        url = row[0]
+                        # Extract host: strip scheme, port, path
+                        host = url.split("//")[-1].split("/")[0].split(":")[0].lower()
+                        if host.endswith(f".{domain}") or host == domain:
+                            subdomains.add(host)
+                    return sorted(subdomains)
+                if resp.status_code in _RETRYABLE and attempt < 2:
+                    wait = 5 * (2 ** attempt)  # 5s, 10s
+                    if log_fn:
+                        log_fn("theharvester",
+                               f"Wayback CDX HTTP {resp.status_code} — Retry {attempt + 1}/3 in {wait}s",
+                               "warn")
+                    _time.sleep(wait)
+                    continue
                 if log_fn:
                     log_fn("theharvester", f"Wayback CDX HTTP {resp.status_code}", "warn")
                 return []
-            rows = resp.json()
-            # First row is the header ["original"], skip it
-            subdomains = set()
-            for row in rows[1:]:
-                if not row:
-                    continue
-                url = row[0]
-                # Extract host from URL, strip scheme, path, port
-                host = url.split("//")[-1].split("/")[0].split(":")[0].lower()
-                if host.endswith(f".{domain}") or host == domain:
-                    subdomains.add(host)
-            return sorted(subdomains)
-        except Exception as exc:
-            if log_fn:
-                log_fn("theharvester", f"Wayback CDX Fehler: {exc}", "warn")
-            return []
+            except Exception as exc:
+                if attempt < 2:
+                    wait = 5 * (2 ** attempt)
+                    if log_fn:
+                        log_fn("theharvester",
+                               f"Wayback CDX Fehler: {exc} — Retry {attempt + 1}/3 in {wait}s",
+                               "warn")
+                    _time.sleep(wait)
+                else:
+                    if log_fn:
+                        log_fn("theharvester", f"Wayback CDX Fehler nach 3 Versuchen: {exc}", "warn")
+        return []
 
     # ── Finding emitters ──────────────────────────────────────────────────────
 
@@ -980,9 +1018,15 @@ class HTTPXAdapter:
                 "docker", "run", "--rm",
                 "-v", f"{input_file}:/targets.txt:ro",
                 "projectdiscovery/httpx:latest",
-                "-l", "/targets.txt", "-json", "-silent",
+                "-l", "/targets.txt",
+                "-json", "-silent",
+                "-follow-redirects", "-max-redirects", "5",
                 "-tech-detect", "-title", "-status-code",
-                "-web-server", "-cdn", "-favicon"
+                "-content-length", "-content-type",
+                "-web-server", "-cdn", "-tls-probe",
+                "-hash", "sha256",
+                "-favicon",
+                "-timeout", "10",
             ]
             rc, stdout, stderr = _run(cmd, timeout=600)
             return self._parse(tenant_id, stdout, stderr, rc)
@@ -1193,7 +1237,7 @@ class NucleiAdapter:
             cmd = [
                 _binary_path if _avail else self.binary,
                 "-l", target_file,
-                "-json",
+                "-jsonl",   # nuclei v3 renamed -json → -jsonl
                 "-severity", severity_filter,
                 "-rate-limit", str(rate_limit),
                 "-bulk-size", str(bulk_size),
@@ -1494,7 +1538,7 @@ class NucleiAdapter:
                 "docker", "run", "--rm",
                 "-v", f"{target_file}:/targets.txt:ro",
                 "projectdiscovery/nuclei:latest",
-                "-l", "/targets.txt", "-json", "-silent",
+                "-l", "/targets.txt", "-jsonl", "-silent",
                 "-severity", severity,
                 "-duc",  # disable update check inside ephemeral container
             ]
