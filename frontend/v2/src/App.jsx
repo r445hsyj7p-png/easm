@@ -1,69 +1,86 @@
+import { useState, Component } from "react";
 import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
+import { Toaster } from "sonner";
+import { getToken, clearToken, clearTenantId, getTenantId, saveTenantId } from "./api/client";
+import { AppProvider } from "./context/AppContext";
+import Shell            from "./components/layout/Shell";
+import LoginPage        from "./pages/LoginPage";
+import DashboardPage    from "./pages/DashboardPage";
+import FindingsPage     from "./pages/FindingsPage";
+import AssetsPage       from "./pages/AssetsPage";
+import McpPage          from "./pages/McpPage";
+import IntelPage        from "./pages/IntelPage";
+import ScansPage        from "./pages/ScansPage";
+import SettingsPage     from "./pages/SettingsPage";
 
-function Placeholder() {
-  return (
-    <div style={{
-      minHeight: "100vh",
-      background: "#0a0f1e",
-      display: "flex",
-      alignItems: "center",
-      justifyContent: "center",
-      flexDirection: "column",
-      gap: 24,
-      fontFamily: "system-ui, -apple-system, sans-serif",
-    }}>
+// Ensure preference is set when running in v2
+if (!localStorage.getItem("easm_ui")) {
+  localStorage.setItem("easm_ui", "v2");
+}
+
+class ErrorBoundary extends Component {
+  constructor(props) { super(props); this.state = { err: null }; }
+  static getDerivedStateFromError(err) { return { err }; }
+  render() {
+    if (!this.state.err) return this.props.children;
+    return (
       <div style={{
-        background: "linear-gradient(135deg, #22c55e, #15803d)",
-        borderRadius: 12,
-        width: 56,
-        height: 56,
-        display: "flex",
-        alignItems: "center",
-        justifyContent: "center",
-        fontSize: 28,
+        minHeight: "100vh", background: "#050810", display: "flex",
+        alignItems: "center", justifyContent: "center", flexDirection: "column", gap: 16, padding: 32,
+        fontFamily: "'JetBrains Mono', monospace",
       }}>
-        🛡
-      </div>
-      <div style={{ textAlign: "center", maxWidth: 400 }}>
-        <div style={{ fontSize: 22, fontWeight: 700, color: "#f1f5f9", marginBottom: 8 }}>
-          EASM Platform v2
+        <div style={{ fontSize: 13, color: "#f43f5e", letterSpacing: "0.08em" }}>RENDER ERROR</div>
+        <div style={{ fontSize: 10, color: "#94a3b8", maxWidth: 600, textAlign: "center", lineHeight: 1.8 }}>
+          {String(this.state.err?.message || this.state.err)}
         </div>
-        <div style={{ fontSize: 14, color: "#64748b", lineHeight: 1.6 }}>
-          Das neue UI befindet sich in der Entwicklung.
-          Diese Seite wird durch die vollständige Neuentwicklung ersetzt.
-        </div>
+        <button onClick={() => window.location.reload()} style={{
+          background: "#22c55e", border: "none", borderRadius: 4, padding: "8px 20px",
+          fontFamily: "'JetBrains Mono', monospace", fontSize: 10, color: "#052e16",
+          cursor: "pointer", fontWeight: 700, marginTop: 8,
+        }}>RELOAD</button>
       </div>
-      <button
-        onClick={() => {
-          localStorage.setItem("easm_ui", "classic");
-          window.location.replace("/");
-        }}
-        style={{
-          background: "transparent",
-          border: "1px solid #334155",
-          borderRadius: 6,
-          padding: "8px 20px",
-          color: "#94a3b8",
-          fontSize: 13,
-          cursor: "pointer",
-          transition: "color 0.15s, border-color 0.15s",
-        }}
-        onMouseEnter={e => { e.target.style.color = "#f1f5f9"; e.target.style.borderColor = "#64748b"; }}
-        onMouseLeave={e => { e.target.style.color = "#94a3b8"; e.target.style.borderColor = "#334155"; }}
-      >
-        ← Zurück zur Classic UI
-      </button>
-    </div>
-  );
+    );
+  }
 }
 
 export default function App() {
+  const [authed,   setAuthed]   = useState(!!getToken());
+  const [tenantId, setTenantId] = useState(() => getTenantId());
+
+  if (authed && !tenantId) {
+    clearToken(); clearTenantId(); window.location.reload(); return null;
+  }
+
+  if (!authed) {
+    return (
+      <LoginPage onLogin={tid => { saveTenantId(tid); setTenantId(tid); setAuthed(true); }} />
+    );
+  }
+
   return (
-    <BrowserRouter basename="/v2">
-      <Routes>
-        <Route path="/" element={<Placeholder />} />
-        <Route path="*" element={<Navigate to="/" replace />} />
-      </Routes>
-    </BrowserRouter>
+    <ErrorBoundary>
+      <AppProvider tenantId={tenantId}>
+        <Toaster
+          position="bottom-right"
+          theme="dark"
+          toastOptions={{ style: { fontFamily: "'JetBrains Mono', monospace", fontSize: 11 } }}
+        />
+        <BrowserRouter basename="/v2">
+          <Routes>
+            <Route path="/" element={<Navigate to="/dashboard" replace />} />
+            <Route element={<Shell />}>
+              <Route path="/dashboard" element={<DashboardPage />} />
+              <Route path="/findings"  element={<FindingsPage />}  />
+              <Route path="/assets"    element={<AssetsPage />}    />
+              <Route path="/mcp"       element={<McpPage />}       />
+              <Route path="/intel"     element={<IntelPage />}     />
+              <Route path="/scans"     element={<ScansPage />}     />
+              <Route path="/settings"  element={<SettingsPage />}  />
+              <Route path="*"          element={<Navigate to="/dashboard" replace />} />
+            </Route>
+          </Routes>
+        </BrowserRouter>
+      </AppProvider>
+    </ErrorBoundary>
   );
 }
