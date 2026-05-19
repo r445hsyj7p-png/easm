@@ -41,24 +41,33 @@ export default function ScansPage() {
   const [scans, setScans]       = useState(null);
   const [scanning, setScanning] = useState(false);
   const intervalRef             = useRef(null);
+  const scansRef                = useRef(null);
+
+  // Keep ref in sync so the poll callback always sees latest scans without being a dep
+  useEffect(() => { scansRef.current = scans; }, [scans]);
 
   // Merge in live data once loaded
   useEffect(() => {
     if (initialScans) setScans(initialScans);
   }, [initialScans]);
 
-  // Poll for running scans
+  // Poll only while running/pending jobs exist — no scans in deps to avoid interval churn
   useEffect(() => {
-    const hasRunning = (scans || []).some(s => s.status === "running" || s.status === "pending");
-    if (!hasRunning) { clearInterval(intervalRef.current); return; }
-    intervalRef.current = setInterval(async () => {
+    const poll = async () => {
+      const hasRunning = (scansRef.current || []).some(
+        s => s.status === "running" || s.status === "pending"
+      );
+      if (!hasRunning) { clearInterval(intervalRef.current); intervalRef.current = null; return; }
       try {
         const data = await apiFetch(`/tenants/${tenantId}/scans?limit=20`);
         setScans(data.scans ?? data);
-      } catch { /* ignore */ }
-    }, 5000);
-    return () => clearInterval(intervalRef.current);
-  }, [scans, tenantId]);
+      } catch { /* ignore polling errors */ }
+    };
+
+    clearInterval(intervalRef.current);
+    intervalRef.current = setInterval(poll, 5000);
+    return () => { clearInterval(intervalRef.current); intervalRef.current = null; };
+  }, [tenantId]);
 
   if (loading && !scans) return <PageLoading />;
 

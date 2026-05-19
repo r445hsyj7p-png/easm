@@ -26,7 +26,7 @@ export default function McpPage() {
   const riskyCount = serverList.filter(s =>
     (s.risk || "").toUpperCase() === "CRITICAL" || (s.risk || "").toUpperCase() === "HIGH"
   ).length;
-  const noAuthCount = serverList.filter(s => !s.auth_required && s.auth_required !== undefined).length;
+  const noAuthCount = serverList.filter(s => s.auth_required === false).length;
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 20 }}>

@@ -86,7 +86,7 @@ export default function LoginPage({ onLogin }) {
     finally { setLoading(false); }
   };
 
-  const onKey = e => { if (e.key === "Enter") mode === "setup" ? doSetup() : doLogin(); };
+  const onKey = e => { if (e.key === "Enter" && mode) mode === "setup" ? doSetup() : doLogin(); };
 
   return (
     <div style={{

@@ -105,16 +105,19 @@ export function Card({ children, style }) {
 }
 
 /* ── Card header ─────────────────────────────────────────────────────────── */
-export function CardHeader({ title, sub, actions }) {
+export function CardHeader({ title, sub, actions, icon }) {
   return (
     <div style={{
       display: "flex", alignItems: "center", justifyContent: "space-between",
       padding: "14px 18px", borderBottom: `1px solid ${T.border}`,
       background: T.bg3,
     }}>
-      <div>
-        <div style={{ fontFamily: T.fontSans, fontSize: 13, fontWeight: 600, color: T.text0 }}>{title}</div>
-        {sub && <div style={{ fontFamily: T.fontSans, fontSize: 11, color: T.text3, marginTop: 2 }}>{sub}</div>}
+      <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+        {icon && <span style={{ flexShrink: 0, lineHeight: 0 }}>{icon}</span>}
+        <div>
+          <div style={{ fontFamily: T.fontSans, fontSize: 13, fontWeight: 600, color: T.text0 }}>{title}</div>
+          {sub && <div style={{ fontFamily: T.fontSans, fontSize: 11, color: T.text3, marginTop: 2 }}>{sub}</div>}
+        </div>
       </div>
       {actions && <div style={{ display: "flex", gap: 8, alignItems: "center" }}>{actions}</div>}
     </div>
