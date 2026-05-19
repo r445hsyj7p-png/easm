@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { toast } from "sonner";
-import { RefreshCw, LogOut, Settings, Shield } from "lucide-react";
+import { RefreshCw, LogOut, Settings, Shield, Sparkles } from "lucide-react";
 import { T } from "../theme";
 import { useApp } from "../context/AppContext";
 import { apiFetch, clearToken, clearTenantId } from "../api/client";
@@ -147,6 +147,14 @@ export default function AppShell() {
             }} variant="primary" size="sm">
               <RefreshCw size={10} />SCAN NOW
             </Btn>
+            <button
+              onClick={() => { localStorage.setItem("easm_ui", "v2"); window.location.replace("/v2/"); }}
+              title="Neues UI ausprobieren"
+              style={{ background: "transparent", border: `1px solid #22c55e40`,
+                borderRadius: 4, padding: "4px 10px", fontFamily: T.font, fontSize: 9,
+                color: "#22c55e", cursor: "pointer", display: "flex", alignItems: "center", gap: 5 }}>
+              <Sparkles size={9} />NEW UI
+            </button>
             <button onClick={() => { clearToken(); clearTenantId(); window.location.reload(); }}
               style={{ background: "transparent", border: `1px solid ${T.border}`,
                 borderRadius: 4, padding: "4px 10px", fontFamily: T.font, fontSize: 9,

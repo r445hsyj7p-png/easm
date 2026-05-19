@@ -1,9 +1,11 @@
 # =============================================================================
 # Dockerfile.frontend
-# Stage 1: Vite Build  |  Stage 2: Nginx SPA Server
+# Stage 1: Vite Build (classic UI)
+# Stage 2: Vite Build (v2 UI)
+# Stage 3: Nginx SPA Server
 # =============================================================================
 
-# ── Stage 1: Build ────────────────────────────────────────────────────────────
+# ── Stage 1: Build classic UI ─────────────────────────────────────────────────
 FROM node:20-alpine AS builder
 
 WORKDIR /app
@@ -12,18 +14,32 @@ WORKDIR /app
 COPY package.json package-lock.json* ./
 RUN npm install --legacy-peer-deps --silent
 
-# Source kopieren und bauen
+# Source kopieren und bauen (exclude v2 subdir to avoid conflicts)
 COPY . .
 RUN npm run build
 
-# ── Stage 2: Serve ────────────────────────────────────────────────────────────
+# ── Stage 2: Build v2 UI ──────────────────────────────────────────────────────
+FROM node:20-alpine AS builder-v2
+
+WORKDIR /app
+
+COPY v2/package.json v2/package-lock.json* ./
+RUN npm install --legacy-peer-deps --silent
+
+COPY v2/ .
+RUN npm run build
+
+# ── Stage 3: Serve ────────────────────────────────────────────────────────────
 FROM nginx:1.25-alpine
 
 # Nginx-Konfiguration
 COPY nginx.conf /etc/nginx/conf.d/default.conf
 
-# Build-Output
+# Classic UI
 COPY --from=builder /app/dist /usr/share/nginx/html
+
+# v2 UI — served under /v2/
+COPY --from=builder-v2 /app/dist /usr/share/nginx/html/v2
 
 # Security: Non-root
 RUN chown -R nginx:nginx /usr/share/nginx/html \
