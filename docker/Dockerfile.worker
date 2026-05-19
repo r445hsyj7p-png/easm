@@ -1,13 +1,9 @@
 # =============================================================================
 # Dockerfile.worker — Celery Worker
-# Verwendet projectdiscovery/nuclei als Basis-Image (Docker Hub, kein GitHub nötig)
-# Enthält: nuclei, nmap, Python, alle Dependencies
+# Enthält: nuclei, subfinder, httpx, naabu, theHarvester, Python, alle Dependencies
 # =============================================================================
 
-# Stage 1: Get nuclei + tools from official Docker Hub image
-FROM projectdiscovery/nuclei:v3.3.1 AS nuclei-src
-
-# Stage 2: Runtime
+# Runtime base
 FROM python:3.11-slim
 
 # System tools
@@ -24,17 +20,21 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     docker.io \
     && rm -rf /var/lib/apt/lists/*
 
-# Nuclei binary from official image (no GitHub download needed)
-COPY --from=nuclei-src /usr/local/bin/nuclei /usr/local/bin/nuclei
-RUN chmod +x /usr/local/bin/nuclei
-
-# Download pre-built projectdiscovery binaries (faster + more reliable than go install)
+# Download all projectdiscovery binaries from GitHub releases (architecture-aware).
+# Copying from the nuclei Docker image caused ELF/libc mismatches because that
+# image is Alpine-based while this runtime is Debian (different dynamic linker path).
 RUN ARCH="$(dpkg --print-architecture)" && \
     case "$ARCH" in \
       amd64) GOARCH=amd64 ;; \
       arm64) GOARCH=arm64 ;; \
       *) GOARCH=amd64 ;; \
     esac && \
+    # nuclei
+    wget -qO /tmp/nuclei.zip \
+      "https://github.com/projectdiscovery/nuclei/releases/download/v3.3.1/nuclei_3.3.1_linux_${GOARCH}.zip" && \
+    unzip -q /tmp/nuclei.zip -d /tmp/nuclei && \
+    mv /tmp/nuclei/nuclei /usr/local/bin/nuclei && \
+    chmod +x /usr/local/bin/nuclei && \
     # subfinder
     wget -qO /tmp/subfinder.zip \
       "https://github.com/projectdiscovery/subfinder/releases/download/v2.6.6/subfinder_2.6.6_linux_${GOARCH}.zip" && \
@@ -53,22 +53,15 @@ RUN ARCH="$(dpkg --print-architecture)" && \
     unzip -q /tmp/naabu.zip -d /tmp/naabu && \
     mv /tmp/naabu/naabu /usr/local/bin/naabu && \
     chmod +x /usr/local/bin/naabu && \
-    rm -rf /tmp/subfinder* /tmp/httpx* /tmp/naabu*
+    rm -rf /tmp/nuclei* /tmp/subfinder* /tmp/httpx* /tmp/naabu*
 
-# theHarvester — OSINT tool
-# Notes:
-#   - pip install git+... silently failed because git was missing from PATH
-#   - v4.8.0 uses pyproject.toml (no requirements/base.txt) — pip install . is correct
-#   - Tags have no 'v' prefix: 4.8.0 not v4.8.0
-#   - pip creates /usr/local/bin/theHarvester entry point from pyproject.toml
+# theHarvester — install with full dependency resolution (no --no-deps).
+# Previous --no-deps approach caused silent breakage when transitive deps
+# (aiomultiprocess, etc.) were missing.  Let pip resolve everything.
 RUN git clone --depth 1 --branch 4.8.0 \
       https://github.com/laramies/theHarvester.git /opt/theHarvester \
-    && pip install --no-cache-dir --no-deps /opt/theHarvester \
-    && pip install --no-cache-dir \
-       dnspython aiodns aiohttp lxml requests netaddr \
-       beautifulsoup4 ujson python-dateutil retrying \
-    && theHarvester --help 2>&1 | head -2 \
-    && echo "theHarvester 4.8.0 OK"
+    && pip install --no-cache-dir /opt/theHarvester \
+    && python -c "from theHarvester.theHarvester import main; print('theHarvester 4.8.0 OK')"
 
 # Python dependencies
 WORKDIR /app
@@ -77,7 +70,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 # ramparts is worker-only and may not be on PyPI — install best-effort
 RUN pip install --no-cache-dir ramparts || echo "ramparts not available on PyPI, skipping"
 
-# App code — CACHEBUST=20260518-7
+# App code — CACHEBUST=20260519-1
 COPY . .
 
 # Entrypoint
