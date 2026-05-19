@@ -1193,7 +1193,7 @@ class NucleiAdapter:
             cmd = [
                 _binary_path if _avail else self.binary,
                 "-l", target_file,
-                "-json",
+                "-jsonl",   # nuclei v3 renamed -json → -jsonl
                 "-severity", severity_filter,
                 "-rate-limit", str(rate_limit),
                 "-bulk-size", str(bulk_size),
@@ -1494,7 +1494,7 @@ class NucleiAdapter:
                 "docker", "run", "--rm",
                 "-v", f"{target_file}:/targets.txt:ro",
                 "projectdiscovery/nuclei:latest",
-                "-l", "/targets.txt", "-json", "-silent",
+                "-l", "/targets.txt", "-jsonl", "-silent",
                 "-severity", severity,
                 "-duc",  # disable update check inside ephemeral container
             ]
