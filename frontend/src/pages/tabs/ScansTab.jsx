@@ -93,12 +93,13 @@ const ScansTab = () => {
 
   const activePhaseKeys = ALL_PHASES.filter(ph => selected[ph.key]).map(ph => ph.key);
   const realPhaseLocalIdx = activePhaseKeys.indexOf(scanStatus?.current_phase ?? "");
-  // -1 when idle so no phase block is highlighted before a scan starts
-  const displayPhaseIdx = realPhaseLocalIdx >= 0 ? realPhaseLocalIdx : (isActive ? 0 : -1);
 
   const isActive = scanStatus?.status === "running" || scanStatus?.status === "pending";
   const isDone   = scanStatus?.status === "completed";
   const isError  = scanStatus?.status === "error";
+
+  // -1 when idle so no phase block is highlighted before a scan starts
+  const displayPhaseIdx = realPhaseLocalIdx >= 0 ? realPhaseLocalIdx : (isActive ? 0 : -1);
 
   const activePhases = ALL_PHASES.filter(ph => selected[ph.key]);
 
