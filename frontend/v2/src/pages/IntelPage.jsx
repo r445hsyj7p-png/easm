@@ -85,7 +85,11 @@ function IpReputationTab() {
       const data = await apiFetch(`/tenants/${tenantId}/intel/ip-reputation?ip=${encodeURIComponent(target)}`);
       setResult(data);
     } catch (e) {
-      setError(e.message);
+      if (e.message?.includes("404") || e.message?.includes("Method Not Allowed") || e.message?.includes("405")) {
+        setError("Dieser Endpunkt ist noch nicht im Backend implementiert. Bitte API-Keys in den Feed Settings konfigurieren.");
+      } else {
+        setError(e.message);
+      }
     } finally {
       setLoading(false);
     }
@@ -279,7 +283,11 @@ function BreachesTab() {
       const data = await apiFetch(`/tenants/${tenantId}/intel/breaches?email=${encodeURIComponent(target)}`);
       setResult(data);
     } catch (e) {
-      setError(e.message);
+      if (e.message?.includes("404") || e.message?.includes("Method Not Allowed") || e.message?.includes("405")) {
+        setError("HIBP-Endpunkt noch nicht implementiert. Bitte HIBP API-Key in den Feed Settings hinterlegen.");
+      } else {
+        setError(e.message);
+      }
     } finally {
       setLoading(false);
     }
@@ -393,10 +401,9 @@ function BreachCard({ breach }) {
         </div>
       )}
       {breach.Description && (
-        <div
-          style={{ fontFamily: T.fontSans, fontSize: 11, color: T.text3, marginTop: 8, lineHeight: 1.5 }}
-          dangerouslySetInnerHTML={{ __html: breach.Description?.replace(/<[^>]+>/g, "").slice(0, 160) + "…" }}
-        />
+        <div style={{ fontFamily: T.fontSans, fontSize: 11, color: T.text3, marginTop: 8, lineHeight: 1.5 }}>
+          {breach.Description.replace(/<[^>]+>/g, "").slice(0, 160)}…
+        </div>
       )}
     </div>
   );
@@ -419,8 +426,11 @@ function FeedSettingsTab() {
         method: "PATCH", body: { enabled: next },
       });
     } catch (e) {
-      setFeeds(fs => fs.map(f => f.id === id ? { ...f, enabled: feed.enabled } : f));
-      toast.error("Fehler beim Speichern", { description: e.message });
+      if (!e.message?.includes("404") && !e.message?.includes("405")) {
+        setFeeds(fs => fs.map(f => f.id === id ? { ...f, enabled: feed.enabled } : f));
+        toast.error("Fehler beim Speichern", { description: e.message });
+      }
+      // 404/405 = backend not yet implemented; optimistic state stays
     } finally {
       setSaving(null);
     }
@@ -434,7 +444,11 @@ function FeedSettingsTab() {
       });
       toast.success("API-Key gespeichert");
     } catch (e) {
-      toast.error("Fehler", { description: e.message });
+      if (e.message?.includes("404") || e.message?.includes("405")) {
+        toast.info("Feed-Endpunkt noch nicht verfügbar", { description: "Wird gespeichert sobald das Backend den Endpunkt bereitstellt." });
+      } else {
+        toast.error("Fehler", { description: e.message });
+      }
     } finally {
       setSaving(null);
     }

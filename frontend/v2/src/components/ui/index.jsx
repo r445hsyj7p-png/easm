@@ -1,7 +1,7 @@
 import { T, SEV, alpha } from "../../theme";
 
 /* ── Severity badge ──────────────────────────────────────────────────────── */
-export function SevBadge({ sev, small }) {
+export function SevBadge({ sev, small, style }) {
   const s = SEV[sev] || SEV.INFO;
   return (
     <span style={{
@@ -10,6 +10,7 @@ export function SevBadge({ sev, small }) {
       color: s.color, background: s.bg, border: `1px solid ${s.border}`,
       padding: small ? "0 5px" : "1px 7px", borderRadius: 3, letterSpacing: "0.04em",
       whiteSpace: "nowrap", lineHeight: small ? "16px" : "18px",
+      ...style,
     }}>{sev}</span>
   );
 }

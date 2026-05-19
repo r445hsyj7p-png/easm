@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { toast } from "sonner";
-import { Target, Play, RefreshCw, Plus } from "lucide-react";
-import { T, SEV } from "../theme";
+import { Target, Play, RefreshCw } from "lucide-react";
+import { T } from "../theme";
 import { Card, CardHeader, TH, TD, SevBadge, EmptyState, SearchInput, Btn } from "../components/ui/index";
 import { FacetedFilter, PillFilter, Pagination } from "../components/ui/FacetedFilter";
 import { useApp } from "../context/AppContext";
@@ -26,7 +26,7 @@ const TYPE_OPTS = [
 const PAGE_SIZE = 25;
 
 export default function TargetsPage() {
-  const { assets, findings, tenantId, triggerScan } = useApp();
+  const { assets, tenantId } = useApp();
 
   const [search,      setSearch]      = useState("");
   const [scopeFilter, setScopeFilter] = useState([]);
