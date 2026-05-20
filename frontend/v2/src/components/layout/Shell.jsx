@@ -3,7 +3,7 @@ import { Outlet, useLocation, useNavigate } from "react-router-dom";
 import {
   LayoutDashboard, AlertTriangle, Globe, Cpu, Radar,
   RefreshCw, Settings, LogOut, Shield, ChevronLeft,
-  ChevronRight, ArrowLeft, Zap, Sun, Moon,
+  ChevronRight, ArrowLeft, Zap, Sun, Moon, Monitor,
   Target, ShieldAlert, Layers,
 } from "lucide-react";
 import { toast } from "sonner";
@@ -72,7 +72,7 @@ export default function Shell() {
   const [collapsed, setCollapsed] = useState(false);
   const [health,    setHealth]    = useState(null);
   const location  = useLocation();
-  const { theme, toggle: toggleTheme, isDark } = useTheme();
+  const { theme, toggle: toggleTheme, isDark, set: setTheme } = useTheme();
   const { tenant, findings, assets, mcp, loading, triggerScan } = useApp();
 
   // Prio 5: Health-Indikator — einmalig beim Mount laden
@@ -161,10 +161,13 @@ export default function Shell() {
             counts={counts}
           />
 
-          {/* Theme toggle */}
+          {/* Theme toggle — cycles dark → light → system */}
           <button
-            onClick={toggleTheme}
-            title={isDark ? "Light Mode" : "Dark Mode"}
+            onClick={() => {
+              const next = theme === "dark" ? "light" : theme === "light" ? "system" : "dark";
+              setTheme(next);
+            }}
+            title={theme === "dark" ? "Light Mode" : theme === "light" ? "System" : "Dark Mode"}
             style={{
               display: "flex", alignItems: "center", justifyContent: "center", gap: 6,
               width: collapsed ? 36 : "calc(100% - 12px)", margin: collapsed ? "4px auto 0" : "4px 12px 0 0",
@@ -175,8 +178,8 @@ export default function Shell() {
             onMouseEnter={e => { e.currentTarget.style.borderColor = T.border2; e.currentTarget.style.color = T.text2; }}
             onMouseLeave={e => { e.currentTarget.style.borderColor = T.border; e.currentTarget.style.color = T.text3; }}
           >
-            {isDark ? <Sun size={13} /> : <Moon size={13} />}
-            {!collapsed && <span>{isDark ? "Light" : "Dark"}</span>}
+            {theme === "dark" ? <Sun size={13} /> : theme === "light" ? <Monitor size={13} /> : <Moon size={13} />}
+            {!collapsed && <span>{theme === "dark" ? "Light" : theme === "light" ? "System" : "Dark"}</span>}
           </button>
 
           {/* Collapse toggle */}
