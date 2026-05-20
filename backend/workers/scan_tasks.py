@@ -391,42 +391,62 @@ def generate_all_monthly_reports():
 
 # ─── Alert Tasks ─────────────────────────────────────────────────────
 
+def _load_tenant_alert_config(tenant_id: str) -> dict:
+    """Load Slack webhook and alert settings from the tenant's settings JSONB."""
+    db_url = os.getenv("DATABASE_URL", "")
+    if not db_url:
+        return {}
+    try:
+        import psycopg2, psycopg2.extras
+        conn = psycopg2.connect(db_url)
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute(
+                "SELECT settings FROM tenants WHERE id = %s",
+                (tenant_id,)
+            )
+            row = cur.fetchone()
+        conn.close()
+        if not row:
+            return {}
+        settings = row.get("settings") or {}
+        if isinstance(settings, str):
+            settings = json.loads(settings)
+        integ = settings.get("integrations", {}) if isinstance(settings, dict) else {}
+        return {
+            "slack_webhook": integ.get("slack_webhook", ""),
+            "slack_channel": integ.get("slack_channel", ""),
+        }
+    except Exception as e:
+        print(f"[Alerts] Fehler beim Laden der Tenant-Config: {e}")
+        return {}
+
+
 @celery_app.task(name="workers.scan_tasks.send_alerts", queue="alerts", priority=10)
 def send_alerts(tenant_id: str, findings: list):
     """
     Sendet Alerts für neue/kritische Findings.
 
     Kanäle:
-    - E-Mail (immer)
-    - Webhook (wenn konfiguriert)
-    - Slack (wenn konfiguriert)
+    - Slack-Webhook (wenn in Einstellungen konfiguriert)
     - Jira/ServiceNow Ticket (wenn konfiguriert, nur CRITICAL)
     """
     print(f"[Alerts] {len(findings)} neue Findings für Tenant {tenant_id}")
 
-    # In Produktion: Tenant-Konfiguration laden
-    tenant_config = {
-        "email": "soc@mueller-gmbh.de",
-        "webhook_url": "https://hooks.slack.com/services/xxx",
-        "ticket_system": "jira",
-        "alert_threshold": "HIGH"  # min. Severity für Alert
-    }
+    tenant_config = _load_tenant_alert_config(tenant_id)
+    slack_url = tenant_config.get("slack_webhook", "")
 
     for finding in findings:
         severity = finding.get("severity", "LOW")
 
-        # E-Mail Alert
-        if severity in ("CRITICAL", "HIGH"):
-            send_email_alert(tenant_id, finding, tenant_config["email"])
-
-        # Webhook (Slack, Teams, etc.)
-        if tenant_config.get("webhook_url"):
-            send_webhook(tenant_config["webhook_url"], {
+        # Slack-Webhook (nur wenn konfiguriert)
+        if slack_url and severity in ("CRITICAL", "HIGH"):
+            send_webhook(slack_url, {
                 "tenant": tenant_id,
                 "severity": severity,
                 "title": finding.get("title"),
+                "asset": finding.get("asset") or finding.get("affected_asset"),
                 "remediation": finding.get("remediation"),
-                "timestamp": datetime.now(timezone.utc).isoformat()
+                "timestamp": datetime.now(timezone.utc).isoformat(),
             })
 
         # Ticket für CRITICAL (4h SLA)

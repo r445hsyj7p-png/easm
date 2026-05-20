@@ -77,6 +77,9 @@ class PipelineConfig:
     # Ramparts
     ramparts_llm: bool = False  # LLM-gestützte Analyse
 
+    # MCP — additional URLs configured by the user in Settings (bypasses port-scan discovery)
+    extra_mcp_urls: list = field(default_factory=list)
+
     # Pipeline
     max_workers: int = 4
     timeout_phase: int = 600     # Sekunden pro Phase
@@ -458,6 +461,17 @@ class EASMPipeline:
         except Exception as e:
             self._log("httpx", f"Phase-Fehler: {e}", "error")
 
+    def _merge_mcp_hosts(self, discovered: list[str]) -> list[str]:
+        """Merge port-scan-discovered MCP hosts with user-configured extra URLs."""
+        extra = [u for u in self.config.extra_mcp_urls if u]
+        if not extra:
+            return discovered
+        combined = list(dict.fromkeys(discovered + extra))  # deduplicate, preserve order
+        if extra:
+            self._log("pipeline", f"MCP: {len(extra)} konfigurierte URL(s) hinzugefügt "
+                      f"({', '.join(extra[:3])}{'…' if len(extra) > 3 else ''})", "info")
+        return combined
+
     def _phase_vulnscan(self, report: PipelineReport,
                           targets: list[str], mcp_hosts: list[str]):
         """Phase 4: Nuclei Vulnerability-Scan"""
@@ -474,11 +488,12 @@ class EASMPipeline:
                 log_fn=self._log
             )
 
-            # Separater MCP-Scan wenn MCP-Hosts gefunden
-            if mcp_hosts and self.config.run_mcp_scan:
+            # Separater MCP-Scan: entdeckte + konfigurierte Hosts
+            all_mcp = self._merge_mcp_hosts(mcp_hosts)
+            if all_mcp and self.config.run_mcp_scan:
                 mcp_findings = self.nuclei.run_mcp_scan(
                     tenant_id=self.tenant_id,
-                    targets=mcp_hosts,
+                    targets=all_mcp,
                     log_fn=self._log
                 )
                 findings.extend(mcp_findings)
@@ -489,13 +504,14 @@ class EASMPipeline:
 
     def _phase_mcp(self, report: PipelineReport, mcp_hosts: list[str]):
         """Phase 5: Ramparts MCP-Tiefenanalyse"""
-        if not mcp_hosts:
+        all_mcp = self._merge_mcp_hosts(mcp_hosts)
+        if not all_mcp:
             return
 
         try:
             findings = self.ramparts.run(
                 tenant_id=self.tenant_id,
-                mcp_urls=mcp_hosts,
+                mcp_urls=all_mcp,
                 use_llm=self.config.ramparts_llm,
                 log_fn=self._log
             )

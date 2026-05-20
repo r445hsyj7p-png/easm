@@ -155,8 +155,24 @@ logger = get_task_logger(__name__)
 
 # ─── Tenant-Abfrage aus der Datenbank ────────────────────────────────────────
 
+def _integrations_from_settings(settings_raw) -> dict:
+    """Extract the integrations sub-dict from a tenant's settings JSONB value.
+
+    psycopg2 with RealDictCursor returns JSONB as a Python dict; a plain text
+    column or older driver version may return a JSON string — both are handled.
+    """
+    if not settings_raw:
+        return {}
+    if isinstance(settings_raw, str):
+        try:
+            settings_raw = json.loads(settings_raw)
+        except Exception:
+            return {}
+    return settings_raw.get("integrations", {}) if isinstance(settings_raw, dict) else {}
+
+
 def get_all_tenants() -> list:
-    """Lädt alle aktiven Mandanten mit ihren Domains aus der Datenbank."""
+    """Lädt alle aktiven Mandanten mit Domains und API-Keys aus der Datenbank."""
     import psycopg2
     import psycopg2.extras
 
@@ -171,6 +187,7 @@ def get_all_tenants() -> list:
                 SELECT
                     t.id,
                     t.name,
+                    t.settings,
                     COALESCE(MIN(d.domain), t.slug) AS domain,
                     COALESCE(
                         array_agg(DISTINCT r) FILTER (WHERE r IS NOT NULL),
@@ -181,22 +198,33 @@ def get_all_tenants() -> list:
                 LEFT JOIN domains d ON d.tenant_id = t.id AND d.status = 'active'
                 LEFT JOIN LATERAL unnest(d.ip_ranges) AS r ON TRUE
                 WHERE t.status = 'active'
-                GROUP BY t.id, t.name, t.slug
+                GROUP BY t.id, t.name, t.slug, t.settings
                 ORDER BY t.name
             """)
             rows = cur.fetchall()
         conn.close()
-        return [
-            {
+        result = []
+        for row in rows:
+            integ = _integrations_from_settings(row.get("settings"))
+            result.append({
                 "id":            row["id"],
                 "name":          row["name"],
                 "domain":        row["domain"] or "",
                 "ip_ranges":     list(row["ip_ranges"] or []),
                 "panos_version": row["panos_version"] or "",
-                "api_keys":      {},
-            }
-            for row in rows
-        ]
+                "api_keys": {
+                    "hibp":           integ.get("hibp", ""),
+                    "greynoise":      integ.get("greynoise", ""),
+                    "abuseipdb":      integ.get("abuseipdb", ""),
+                    "alienvault_otx": integ.get("alienvault_otx", ""),
+                    "spyonweb":       integ.get("spyonweb", ""),
+                    "mcp_url":        integ.get("mcp_url", ""),
+                    "mcp_token":      integ.get("mcp_token", ""),
+                },
+                "slack_webhook": integ.get("slack_webhook", ""),
+                "slack_channel": integ.get("slack_channel", ""),
+            })
+        return result
     except Exception as exc:
         logger.error(f"DB-Fehler beim Laden der Mandanten: {exc}")
         return []
@@ -679,27 +707,30 @@ def schedule_tenants(plan: str = "all", scan_type: str = "full"):
     scheduled = 0
 
     for tenant in tenants:
+        api_keys = tenant.get("api_keys", {})
         if scan_type == "mcp_only":
-            # Nur MCP-Scan
+            # Combine IP ranges with the user-configured MCP URL (if set)
+            targets = list(tenant["ip_ranges"])
+            configured_url = api_keys.get("mcp_url", "")
+            if configured_url:
+                targets.append(configured_url)
             run_mcp_scan.apply_async(
-                args=[tenant["id"], tenant["ip_ranges"]],
+                args=[tenant["id"], targets],
                 priority=5
             )
         elif scan_type == "hibp_only":
-            # Nur HIBP
             run_hibp_check.apply_async(
-                args=[tenant["id"], tenant["domain"],
-                      tenant.get("api_keys", {}).get("hibp", "")],
+                args=[tenant["id"], tenant["domain"], api_keys.get("hibp", "")],
                 priority=5
             )
         else:
-            # Vollständige Pipeline
+            # Vollständige Pipeline — api_keys jetzt aus DB-Settings befüllt
             run_full_pipeline.apply_async(
                 args=[tenant["id"], {
-                    "domain": tenant["domain"],
-                    "ip_ranges": tenant["ip_ranges"],
+                    "domain":        tenant["domain"],
+                    "ip_ranges":     tenant["ip_ranges"],
                     "panos_version": tenant.get("panos_version", ""),
-                    "api_keys": tenant.get("api_keys", {}),
+                    "api_keys":      api_keys,
                 }],
                 priority=5
             )
@@ -779,23 +810,54 @@ def generate_monthly_reports():
 )
 def send_critical_alert(tenant_id: str, findings: list,
                          alert_type: str = "general"):
-    """Sofort-Alert bei kritischen Findings"""
-    import urllib.request
+    """Sofort-Alert bei kritischen Findings via Slack-Webhook (aus Tenant-Settings)."""
+    import urllib.request, urllib.error
 
-    logger.warning(f"[{tenant_id}] 🚨 CRITICAL ALERT: {len(findings)} findings")
-
-    # In Produktion: E-Mail + Slack-Webhook + Ticket
-    # Demo: Log-Ausgabe
+    logger.warning(f"[{tenant_id}] CRITICAL ALERT ({alert_type}): {len(findings)} findings")
     for f in findings:
-        logger.critical(
-            f"  [{f.get('tool','?')}] {f.get('title','?')} → {f.get('asset','?')}"
-        )
+        logger.critical(f"  [{f.get('tool','?')}] {f.get('title','?')} → {f.get('asset','?')}")
+
+    # Load Slack webhook from tenant settings
+    slack_url = ""
+    try:
+        tenants = [t for t in get_all_tenants() if t["id"] == tenant_id]
+        if tenants:
+            slack_url = tenants[0].get("slack_webhook", "")
+    except Exception as e:
+        logger.error(f"[{tenant_id}] Alert: Fehler beim Laden der Tenant-Settings: {e}")
+
+    if slack_url:
+        payload = {
+            "text": f":rotating_light: *CRITICAL ALERT* ({alert_type}) — Tenant `{tenant_id}`",
+            "attachments": [
+                {
+                    "color": "danger",
+                    "fields": [
+                        {"title": f.get("title", "?"),
+                         "value": f"Asset: `{f.get('asset') or f.get('affected_asset', '?')}`  |  Tool: {f.get('tool', '?')}",
+                         "short": False}
+                        for f in findings[:5]
+                    ],
+                }
+            ],
+        }
+        try:
+            data = json.dumps(payload).encode()
+            req = urllib.request.Request(
+                slack_url, data=data,
+                headers={"Content-Type": "application/json"}
+            )
+            urllib.request.urlopen(req, timeout=5)
+            logger.info(f"[{tenant_id}] Slack-Alert gesendet")
+        except urllib.error.URLError as e:
+            logger.error(f"[{tenant_id}] Slack-Alert fehlgeschlagen: {e}")
 
     return {
-        "tenant_id": tenant_id,
-        "alert_type": alert_type,
+        "tenant_id":      tenant_id,
+        "alert_type":     alert_type,
         "critical_count": len(findings),
-        "sent_at": datetime.datetime.utcnow().isoformat()
+        "slack_sent":     bool(slack_url),
+        "sent_at":        datetime.datetime.utcnow().isoformat(),
     }
 
 
@@ -810,7 +872,7 @@ def _score_to_grade(score: int) -> str:
 
 
 def _get_tenant_info(tenant_id: str) -> dict:
-    """Loads domain, ip_ranges, panos_version from DB for a tenant."""
+    """Loads domain, ip_ranges, panos_version, api_keys and slack config from DB."""
     import psycopg2, psycopg2.extras
     db_url = os.getenv("DATABASE_URL", "")
     if not db_url:
@@ -821,6 +883,7 @@ def _get_tenant_info(tenant_id: str) -> dict:
         with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
             cur.execute("""
                 SELECT
+                    t.settings,
                     COALESCE(MIN(d.domain), t.slug, '') AS domain,
                     COALESCE(
                         array_agg(DISTINCT r) FILTER (WHERE r IS NOT NULL), '{}'
@@ -831,15 +894,27 @@ def _get_tenant_info(tenant_id: str) -> dict:
                     ON d.tenant_id = t.id AND d.status = 'active'
                 LEFT JOIN LATERAL unnest(d.ip_ranges) AS r ON TRUE
                 WHERE t.id = %s
-                GROUP BY t.id, t.slug
+                GROUP BY t.id, t.slug, t.settings
             """, (tenant_id,))
             row = cur.fetchone()
         conn.close()
         if row:
+            integ = _integrations_from_settings(row.get("settings"))
             return {
                 "domain":        row["domain"] or "",
                 "ip_ranges":     list(row["ip_ranges"] or []),
                 "panos_version": row["panos_version"] or "",
+                "api_keys": {
+                    "hibp":           integ.get("hibp", ""),
+                    "greynoise":      integ.get("greynoise", ""),
+                    "abuseipdb":      integ.get("abuseipdb", ""),
+                    "alienvault_otx": integ.get("alienvault_otx", ""),
+                    "spyonweb":       integ.get("spyonweb", ""),
+                    "mcp_url":        integ.get("mcp_url", ""),
+                    "mcp_token":      integ.get("mcp_token", ""),
+                },
+                "slack_webhook": integ.get("slack_webhook", ""),
+                "slack_channel": integ.get("slack_channel", ""),
             }
     except Exception as e:
         logger.error(f"Fehler beim Laden der Tenant-Info: {e}")
@@ -856,8 +931,15 @@ def _build_config(config_dict: dict):
     def _on(key):
         return selected is None or key in selected
 
+    api_keys = config_dict.get("api_keys", {})
+
+    # User-configured MCP URL (from Settings → Integrations) is added as an
+    # explicit scan target in addition to hosts discovered by Naabu.
+    extra_mcp = [u for u in [api_keys.get("mcp_url", "")] if u]
+
     return PipelineConfig(
-        api_keys=config_dict.get("api_keys", {}),
+        api_keys=api_keys,
+        extra_mcp_urls=extra_mcp,
         run_subfinder=_on("discovery"),
         run_theharvester=_on("discovery"),
         run_naabu=_on("portscan"),
