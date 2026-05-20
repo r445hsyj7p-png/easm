@@ -65,9 +65,20 @@ export function AppProvider({ tenantId, children }) {
     catch { load(); }
   }, [tenantId, load]);
 
-  const triggerScan = useCallback(async (type="full") => {
-    const job = await apiFetch(`/tenants/${tenantId}/scans`, {method:"POST",body:{scan_type:type}});
-    const normalized = { ...job, id: job.id ?? job.scan_id, scan_type: type, status: job.status ?? "pending" };
+  const triggerScan = useCallback(async (type = "full", mode = "active") => {
+    // quick is always passive — mirror the server-side enforcement
+    const effectiveMode = type === "quick" ? "passive" : mode;
+    const job = await apiFetch(`/tenants/${tenantId}/scans`, {
+      method: "POST",
+      body: { scan_type: type, scan_mode: effectiveMode },
+    });
+    const normalized = {
+      ...job,
+      id:        job.id ?? job.scan_id,
+      scan_type: `${type}/${effectiveMode}`,
+      scan_mode: effectiveMode,
+      status:    job.status ?? "pending",
+    };
     setScans(prev => [normalized, ...prev]);
     return normalized;
   }, [tenantId]);

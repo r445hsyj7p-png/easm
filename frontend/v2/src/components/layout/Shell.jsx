@@ -90,9 +90,12 @@ export default function Shell() {
     : (tenant.score || 0) >= 40 ? T.medium : T.critical;
 
   const handleScan = async () => {
+    const mode = localStorage.getItem("easm_scan_mode") || "active";
     try {
-      await triggerScan("full");
-      toast.success("Scan gestartet", { description: "Full-Pipeline läuft im Hintergrund." });
+      await triggerScan("full", mode);
+      toast.success("Scan gestartet", {
+        description: `Full-Pipeline (${mode === "passive" ? "Passiv · nur OSINT" : "Aktiv · inkl. Port-Scan"}) läuft im Hintergrund.`,
+      });
     } catch (e) {
       toast.error("Scan fehlgeschlagen", { description: e.message });
     }

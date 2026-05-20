@@ -3,6 +3,7 @@ import { RefreshCw, Play, CheckCircle, XCircle, Clock, Loader, X, AlertTriangle,
 import { toast } from "sonner";
 import { T, alpha } from "../theme";
 import { Card, CardHeader, TH, TD, EmptyState, PageLoading, Btn } from "../components/ui/index";
+import { ScanModeToggle, ScanModeBadge, parseScanType } from "../components/ui/ScanModeToggle";
 import { useApp } from "../context/AppContext";
 import { apiFetch } from "../api/client";
 
@@ -45,8 +46,16 @@ export default function ScansPage() {
   const [scanning, setScanning] = useState(false);
   const [detail,   setDetail]   = useState(null);
   const [detailLoading, setDetailLoading] = useState(false);
+  const [scanMode, setScanMode] = useState(
+    () => localStorage.getItem("easm_scan_mode") || "active"
+  );
   const intervalRef = useRef(null);
   const scansRef    = useRef(null);
+
+  const handleModeChange = (m) => {
+    setScanMode(m);
+    localStorage.setItem("easm_scan_mode", m);
+  };
 
   useEffect(() => { scansRef.current = scans; }, [scans]);
   useEffect(() => { if (initialScans) setScans(initialScans); }, [initialScans]);
@@ -90,11 +99,14 @@ export default function ScansPage() {
   const displayScans = scans || initialScans || [];
 
   const handleScan = async (type) => {
+    // quick is always passive; full/other respect current scanMode toggle
+    const mode = type === "quick" ? "passive" : scanMode;
     setScanning(true);
     try {
-      const job = await triggerScan(type);
+      const job = await triggerScan(type, mode);
       setScans(prev => [job, ...(prev || [])]);
-      toast.success(`${type === "full" ? "Full Scan" : "Quick Scan"} gestartet`, {
+      const modeLabel = mode === "passive" ? "Passiv" : "Aktiv";
+      toast.success(`${type === "full" ? "Full Scan" : "Quick Scan"} (${modeLabel}) gestartet`, {
         description: `Job ID: ${job.id || job.scan_id}`,
       });
     } catch (e) {
@@ -118,7 +130,9 @@ export default function ScansPage() {
               {displayScans.length} Scans · Zeile anklicken für Details
             </div>
           </div>
-          <div style={{ display: "flex", gap: 10 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+            <ScanModeToggle mode={scanMode} onChange={handleModeChange} size="sm" />
+            <div style={{ width: 1, height: 24, background: T.border }} />
             <Btn onClick={() => handleScan("quick")} disabled={scanning}>
               <Play size={12} />Quick Scan
             </Btn>
@@ -158,6 +172,8 @@ export default function ScansPage() {
                     const stats    = scan.stats || scan.tool_stats || {};
                     const findings = scan.findings_count ?? Object.values(stats).reduce((s, v) => s + (v?.findings || 0), 0);
                     const assets   = scan.assets_count   ?? Object.values(stats).reduce((s, v) => s + (v?.assets   || 0), 0);
+                    const { type: scanBaseType, mode: scanHistMode } =
+                      parseScanType(scan.scan_type || scan.type || "full");
 
                     return (
                       <tr key={scan.id || scan.scan_id}
@@ -174,11 +190,14 @@ export default function ScansPage() {
                           {(scan.id || scan.scan_id || "—").toString().slice(0, 8)}…
                         </TD>
                         <TD>
-                          <span style={{
-                            fontFamily: T.font, fontSize: 10, color: T.text2,
-                            background: T.bg4, border: `1px solid ${T.border}`,
-                            padding: "1px 7px", borderRadius: 3,
-                          }}>{scan.scan_type || scan.type || "full"}</span>
+                          <div style={{ display: "flex", alignItems: "center", gap: 5 }}>
+                            <span style={{
+                              fontFamily: T.font, fontSize: 10, color: T.text2,
+                              background: T.bg4, border: `1px solid ${T.border}`,
+                              padding: "1px 7px", borderRadius: 3,
+                            }}>{scanBaseType}</span>
+                            <ScanModeBadge mode={scanHistMode} />
+                          </div>
                         </TD>
                         <TD><StatusCell status={scan.status} /></TD>
                         <TD style={{ fontFamily: T.fontSans, fontSize: 12, color: T.text2 }}>{startedStr}</TD>

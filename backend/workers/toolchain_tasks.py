@@ -223,6 +223,7 @@ def get_all_tenants() -> list:
                 },
                 "slack_webhook": integ.get("slack_webhook", ""),
                 "slack_channel": integ.get("slack_channel", ""),
+                "scan_mode":     integ.get("default_scan_mode", "active"),
             })
         return result
     except Exception as exc:
@@ -724,13 +725,14 @@ def schedule_tenants(plan: str = "all", scan_type: str = "full"):
                 priority=5
             )
         else:
-            # Vollständige Pipeline — api_keys jetzt aus DB-Settings befüllt
+            # Vollständige Pipeline — api_keys und scan_mode aus DB-Settings
             run_full_pipeline.apply_async(
                 args=[tenant["id"], {
                     "domain":        tenant["domain"],
                     "ip_ranges":     tenant["ip_ranges"],
                     "panos_version": tenant.get("panos_version", ""),
                     "api_keys":      api_keys,
+                    "scan_mode":     tenant.get("scan_mode", "active"),
                 }],
                 priority=5
             )
@@ -933,11 +935,21 @@ def _build_config(config_dict: dict):
 
     api_keys = config_dict.get("api_keys", {})
 
+    # quick scan is always passive — enforce here regardless of what the caller sent.
+    if scan_type == "quick":
+        scan_mode = "passive"
+    else:
+        scan_mode = config_dict.get("scan_mode", "active")
+    # Normalise — reject anything that isn't a known value.
+    if scan_mode not in ("passive", "active"):
+        scan_mode = "active"
+
     # User-configured MCP URL (from Settings → Integrations) is added as an
     # explicit scan target in addition to hosts discovered by Naabu.
     extra_mcp = [u for u in [api_keys.get("mcp_url", "")] if u]
 
     return PipelineConfig(
+        scan_mode=scan_mode,
         api_keys=api_keys,
         extra_mcp_urls=extra_mcp,
         run_subfinder=_on("discovery"),

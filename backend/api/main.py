@@ -10,7 +10,7 @@ from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from starlette.middleware.base import BaseHTTPMiddleware
 from contextlib import asynccontextmanager
 from contextvars import ContextVar
-from pydantic import BaseModel, EmailStr
+from pydantic import BaseModel, EmailStr, validator
 from typing import Optional
 from datetime import datetime, timedelta, timezone
 import uuid, json, os, secrets as _secrets, logging
@@ -149,6 +149,13 @@ class FindingUpdateRequest(BaseModel):
 
 class ScanRequest(BaseModel):
     scan_type: str = "full"
+    scan_mode: str = "active"  # "passive" | "active"
+
+    @validator("scan_mode")
+    def _validate_mode(cls, v: str) -> str:
+        if v not in ("passive", "active"):
+            raise ValueError("scan_mode must be 'passive' or 'active'")
+        return v
 
 class DomainCreateRequest(BaseModel):
     domain: str
@@ -536,37 +543,74 @@ async def trigger_scan(
     db: AsyncSession  = Depends(get_db),
 ):
     ctx.assert_own_tenant(tenant_id)
-    scan_id = await repo.create_scan_job(db, tenant_id, req.scan_type, "manual")
+
+    # quick scan is always passive — enforce server-side
+    effective_mode = "passive" if req.scan_type == "quick" else req.scan_mode
+
+    # Encode mode into stored scan_type so the history table can display it
+    # without a schema migration.  Format: "<type>/<mode>"  e.g. "full/active"
+    stored_type = f"{req.scan_type}/{effective_mode}"
+    scan_id = await repo.create_scan_job(db, tenant_id, stored_type, "manual")
+
     # Dispatch to Celery
     try:
         from sqlalchemy import text
         from workers.toolchain_tasks import run_full_pipeline
-        # Load tenant domain for scan targeting
-        domain_row = await db.execute(text("""
-            SELECT COALESCE(MIN(d.domain), t.slug, '') AS domain,
-                   COALESCE(array_agg(DISTINCT r) FILTER (WHERE r IS NOT NULL), '{}') AS ip_ranges,
-                   COALESCE(MAX(d.panos_version), '') AS panos_version
+
+        # Load tenant domain + api_keys (settings) in one query so the worker
+        # has everything it needs without a second DB round-trip.
+        tenant_row = await db.execute(text("""
+            SELECT
+                t.settings,
+                COALESCE(MIN(d.domain), t.slug, '') AS domain,
+                COALESCE(array_agg(DISTINCT r) FILTER (WHERE r IS NOT NULL), '{}') AS ip_ranges,
+                COALESCE(MAX(d.panos_version), '') AS panos_version
             FROM tenants t
             LEFT JOIN domains d ON d.tenant_id = t.id AND d.status = 'active'
             LEFT JOIN LATERAL unnest(d.ip_ranges) AS r ON TRUE
             WHERE t.id = :tid
-            GROUP BY t.id, t.slug
+            GROUP BY t.id, t.slug, t.settings
         """), {"tid": tenant_id})
-        domain_info = domain_row.mappings().first() or {}
+        row = tenant_row.mappings().first() or {}
+
+        import json as _json
+        raw_settings = row.get("settings") or {}
+        if isinstance(raw_settings, str):
+            raw_settings = _json.loads(raw_settings)
+        integ = raw_settings.get("integrations", {}) if isinstance(raw_settings, dict) else {}
+
+        api_keys = {
+            "hibp":           integ.get("hibp", ""),
+            "greynoise":      integ.get("greynoise", ""),
+            "abuseipdb":      integ.get("abuseipdb", ""),
+            "alienvault_otx": integ.get("alienvault_otx", ""),
+            "spyonweb":       integ.get("spyonweb", ""),
+            "mcp_url":        integ.get("mcp_url", ""),
+            "mcp_token":      integ.get("mcp_token", ""),
+        }
+
         run_full_pipeline.apply_async(
             args=[tenant_id, {
                 "scan_id":       scan_id,
                 "scan_type":     req.scan_type,
-                "domain":        domain_info.get("domain", ""),
-                "ip_ranges":     list(domain_info.get("ip_ranges") or []),
-                "panos_version": domain_info.get("panos_version", ""),
+                "scan_mode":     effective_mode,
+                "domain":        row.get("domain", ""),
+                "ip_ranges":     list(row.get("ip_ranges") or []),
+                "panos_version": row.get("panos_version", ""),
+                "api_keys":      api_keys,
             }],
             kwargs={"request_id": request_id_var.get()},
             queue="scans",
         )
     except Exception as _dispatch_err:
         logger.warning(f"[trigger_scan] Celery dispatch failed (scan_id={scan_id}): {_dispatch_err}")
-    return {"scan_id": scan_id, "status": "pending", "id": scan_id}
+
+    return {
+        "scan_id":   scan_id,
+        "status":    "pending",
+        "id":        scan_id,
+        "scan_mode": effective_mode,
+    }
 
 
 @app.get("/api/v1/tenants/{tenant_id}/scans/{scan_id}", tags=["Scans"])

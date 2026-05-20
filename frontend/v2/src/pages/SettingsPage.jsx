@@ -5,6 +5,7 @@ import {
   PauseCircle, PlayCircle, Plus, ChevronDown, ChevronUp,
   Eye, EyeOff, Bell, Cpu, Zap, Sun, Moon, Monitor,
 } from "lucide-react";
+import { ScanModeToggle } from "../components/ui/ScanModeToggle";
 import { T, alpha } from "../theme";
 import { Card, CardHeader, KpiCard, PageLoading, Btn } from "../components/ui/index";
 import { useApp } from "../context/AppContext";
@@ -125,6 +126,7 @@ export default function SettingsPage() {
   const [saving,        setSaving]       = useState(false);
   const [schedule,      setSchedule]     = useState("");
   const [editSchedule,  setEditSchedule] = useState(false);
+  const [defaultMode,   setDefaultMode]  = useState("active");
 
   // Domain state
   const [domains,       setDomains]       = useState([]);
@@ -159,6 +161,7 @@ export default function SettingsPage() {
     try {
       const data = await apiFetch(`/tenants/${tenantId}/settings`);
       const s = data.integrations || {};
+      setDefaultMode(s.default_scan_mode || "active");
       setIntel({
         hibp:           s.hibp           ?? "",
         greynoise:      s.greynoise      ?? "",
@@ -198,6 +201,18 @@ export default function SettingsPage() {
   };
 
   const fieldSetter = (setter) => (key, value) => setter(prev => ({ ...prev, [key]: value }));
+
+  const handleDefaultModeChange = async (m) => {
+    setDefaultMode(m);
+    // persist immediately — no extra save button needed for a toggle
+    try {
+      const current = await apiFetch(`/tenants/${tenantId}/settings`);
+      await apiFetch(`/tenants/${tenantId}/settings`, {
+        method: "PUT",
+        body: { ...(current || {}), integrations: { ...(current?.integrations || {}), default_scan_mode: m } },
+      });
+    } catch (e) { toast.error("Fehler beim Speichern des Scan-Modus", { description: e.message }); }
+  };
 
   // ── Domain handlers ────────────────────────────────────────────────────────
 
@@ -420,10 +435,10 @@ export default function SettingsPage() {
         </div>
       </Card>
 
-      {/* ── Scan schedule ── */}
+      {/* ── Scan schedule + mode ── */}
       <Card>
         <CardHeader title="Scan-Konfiguration" icon={<RefreshCw size={15} color={T.text3} />} />
-        <div style={{ padding: "20px 24px" }}>
+        <div style={{ padding: "20px 24px", display: "flex", flexDirection: "column", gap: 0 }}>
           <SettingRow
             label="Scan-Intervall"
             value={tenant.scan_schedule || "Nicht konfiguriert"}
@@ -445,6 +460,18 @@ export default function SettingsPage() {
               <option value="monthly">Monatlich</option>
             </select>
           </SettingRow>
+
+          {/* Default scan mode — affects scheduled scans and the SCAN NOW button */}
+          <div style={{ paddingTop: 18 }}>
+            <div style={{ fontFamily: T.fontSans, fontSize: 11, color: T.text3, marginBottom: 10, textTransform: "uppercase", letterSpacing: "0.04em" }}>
+              Standard Scan-Modus
+            </div>
+            <ScanModeToggle mode={defaultMode} onChange={handleDefaultModeChange} />
+            <div style={{ fontFamily: T.fontSans, fontSize: 11, color: T.text4, marginTop: 8 }}>
+              Gilt für geplante Scans und den "SCAN NOW"-Button in der Toolbar.
+              Quick Scan ist immer passiv.
+            </div>
+          </div>
         </div>
       </Card>
 
