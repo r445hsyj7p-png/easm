@@ -1,27 +1,28 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { Outlet, useLocation, useNavigate } from "react-router-dom";
 import {
   LayoutDashboard, AlertTriangle, Globe, Cpu, Radar,
   RefreshCw, Settings, LogOut, Shield, ChevronLeft,
-  ChevronRight, ArrowLeft, Zap, Sun, Moon,
+  ChevronRight, ArrowLeft, Zap, Sun, Moon, Monitor,
   Target, ShieldAlert, Layers,
 } from "lucide-react";
 import { toast } from "sonner";
 import { T, alpha } from "../../theme";
 import { useApp } from "../../context/AppContext";
-import { clearToken, clearTenantId } from "../../api/client";
+import { clearToken, clearTenantId, apiFetch } from "../../api/client";
 import { useTheme } from "../../hooks/useTheme";
 import { Spinner } from "../ui/index";
+import { GlobalSearch } from "../ui/GlobalSearch";
 
 const NAV_ITEMS = [
-  { path: "/dashboard",       label: "Dashboard",       Icon: LayoutDashboard                      },
-  { path: "/findings",        label: "Findings",        Icon: AlertTriangle, countKey: "findings" },
-  { path: "/vulnerabilities", label: "Vulnerabilities", Icon: ShieldAlert                          },
-  { path: "/targets",         label: "Targets",         Icon: Target                               },
-  { path: "/assetsnew",       label: "Assets",          Icon: Layers,        countKey: "assets"   },
+  { path: "/dashboard",       label: "Dashboard",       Icon: LayoutDashboard                       },
+  { path: "/findings",        label: "Findings",        Icon: AlertTriangle, countKey: "findings"  },
+  { path: "/vulnerabilities", label: "Vulnerabilities", Icon: ShieldAlert                           },
+  { path: "/targets",         label: "Targets",         Icon: Target                                },
+  { path: "/assetsnew",       label: "Assets",          Icon: Layers,        countKey: "assets"    },
   { path: "/mcp",             label: "MCP Exposure",    Icon: Cpu,           countKey: "mcp", alert: true },
-  { path: "/intel",           label: "Intelligence",    Icon: Radar                                },
-  { path: "/scans",           label: "Scans",           Icon: RefreshCw                            },
+  { path: "/intel",           label: "Intelligence",    Icon: Radar                                 },
+  { path: "/scans",           label: "Scans",           Icon: RefreshCw                             },
 ];
 
 function NavItem({ item, active, collapsed, counts }) {
@@ -69,9 +70,15 @@ function NavItem({ item, active, collapsed, counts }) {
 
 export default function Shell() {
   const [collapsed, setCollapsed] = useState(false);
+  const [health,    setHealth]    = useState(null);
   const location  = useLocation();
-  const { theme, toggle: toggleTheme, isDark } = useTheme();
+  const { theme, toggle: toggleTheme, isDark, set: setTheme } = useTheme();
   const { tenant, findings, assets, mcp, loading, triggerScan } = useApp();
+
+  // Prio 5: Health-Indikator — einmalig beim Mount laden
+  useEffect(() => {
+    apiFetch("/health").then(setHealth).catch(() => setHealth(null));
+  }, []);
 
   const counts = {
     findings: (findings || []).filter(f => f.status === "open").length,
@@ -83,13 +90,22 @@ export default function Shell() {
     : (tenant.score || 0) >= 40 ? T.medium : T.critical;
 
   const handleScan = async () => {
+    const mode = localStorage.getItem("easm_scan_mode") || "active";
     try {
-      await triggerScan("full");
-      toast.success("Scan gestartet", { description: "Full-Pipeline läuft im Hintergrund." });
+      await triggerScan("full", mode);
+      toast.success("Scan gestartet", {
+        description: `Full-Pipeline (${mode === "passive" ? "Passiv · nur OSINT" : "Aktiv · inkl. Port-Scan"}) läuft im Hintergrund.`,
+      });
     } catch (e) {
       toast.error("Scan fehlgeschlagen", { description: e.message });
     }
   };
+
+  const healthOk    = health?.status === "ok" && health?.db === true;
+  const healthColor = health == null ? T.text4 : healthOk ? T.accent : T.critical;
+  const healthTitle = health == null
+    ? "Health unbekannt"
+    : `Backend ${healthOk ? "OK" : "FEHLER"} · DB: ${health.db ? "OK" : "ERR"} · v${health.version || "?"}`;
 
   return (
     <div style={{ display: "flex", minHeight: "100vh", background: T.bg0 }}>
@@ -136,7 +152,7 @@ export default function Shell() {
           ))}
         </nav>
 
-        {/* Bottom: settings + theme toggle + collapse */}
+        {/* Bottom: settings + theme + collapse + health */}
         <div style={{
           padding: collapsed ? "12px 4px" : "12px 0 12px 12px",
           borderTop: `1px solid ${T.border}`, flexShrink: 0,
@@ -148,10 +164,13 @@ export default function Shell() {
             counts={counts}
           />
 
-          {/* Theme toggle */}
+          {/* Theme toggle — cycles dark → light → system */}
           <button
-            onClick={toggleTheme}
-            title={isDark ? "Light Mode" : "Dark Mode"}
+            onClick={() => {
+              const next = theme === "dark" ? "light" : theme === "light" ? "system" : "dark";
+              setTheme(next);
+            }}
+            title={theme === "dark" ? "Light Mode" : theme === "light" ? "System" : "Dark Mode"}
             style={{
               display: "flex", alignItems: "center", justifyContent: "center", gap: 6,
               width: collapsed ? 36 : "calc(100% - 12px)", margin: collapsed ? "4px auto 0" : "4px 12px 0 0",
@@ -162,10 +181,11 @@ export default function Shell() {
             onMouseEnter={e => { e.currentTarget.style.borderColor = T.border2; e.currentTarget.style.color = T.text2; }}
             onMouseLeave={e => { e.currentTarget.style.borderColor = T.border; e.currentTarget.style.color = T.text3; }}
           >
-            {isDark ? <Sun size={13} /> : <Moon size={13} />}
-            {!collapsed && <span>{isDark ? "Light" : "Dark"}</span>}
+            {theme === "dark" ? <Sun size={13} /> : theme === "light" ? <Monitor size={13} /> : <Moon size={13} />}
+            {!collapsed && <span>{theme === "dark" ? "Light" : theme === "light" ? "System" : "Dark"}</span>}
           </button>
 
+          {/* Collapse toggle */}
           <button
             onClick={() => setCollapsed(c => !c)}
             title={collapsed ? "Ausklappen" : "Einklappen"}
@@ -180,6 +200,24 @@ export default function Shell() {
           >
             {collapsed ? <ChevronRight size={13} /> : <ChevronLeft size={13} />}
           </button>
+
+          {/* Health indicator */}
+          <div style={{
+            display: "flex", alignItems: "center",
+            justifyContent: collapsed ? "center" : "flex-start",
+            gap: 6, padding: collapsed ? "8px 0" : "8px 0 0 2px", marginTop: 4,
+          }} title={healthTitle}>
+            <div style={{
+              width: 6, height: 6, borderRadius: "50%", flexShrink: 0,
+              background: healthColor,
+              boxShadow: healthOk ? `0 0 4px ${alpha(T.accent, 60)}` : "none",
+            }} />
+            {!collapsed && (
+              <span style={{ fontFamily: T.font, fontSize: 9, color: T.text4 }}>
+                {health == null ? "—" : healthOk ? `v${health.version || "?"}` : "FEHLER"}
+              </span>
+            )}
+          </div>
         </div>
       </aside>
 
@@ -188,7 +226,7 @@ export default function Shell() {
         {/* Top bar */}
         <header style={{
           height: 56, display: "flex", alignItems: "center",
-          padding: "0 24px", gap: 10,
+          padding: "0 16px 0 20px", gap: 10,
           background: T.bg1, borderBottom: `1px solid ${T.border}`,
           position: "sticky", top: 0, zIndex: 50, flexShrink: 0,
         }}>
@@ -196,7 +234,7 @@ export default function Shell() {
           <div style={{
             display: "flex", alignItems: "center", gap: 8,
             background: T.bg2, border: `1px solid ${T.border}`,
-            borderRadius: 6, padding: "5px 12px",
+            borderRadius: 6, padding: "5px 12px", flexShrink: 0,
           }}>
             <div style={{
               width: 7, height: 7, borderRadius: "50%",
@@ -213,16 +251,19 @@ export default function Shell() {
             border: `1px solid ${alpha(scoreColor, 19)}`,
             borderRadius: 6, padding: "5px 10px",
             fontFamily: T.font, fontSize: 11, color: scoreColor, fontWeight: 700,
+            flexShrink: 0,
           }}>
             Score {tenant.score ?? "—"} &nbsp;·&nbsp; Grade {tenant.grade ?? "?"}
           </div>
 
           {loading && <Spinner size={16} />}
-          <div style={{ flex: 1 }} />
 
-          {/* Scan */}
+          {/* Prio 2: Globale Suche */}
+          <GlobalSearch />
+
+          {/* Scan now */}
           <button onClick={handleScan} style={{
-            display: "flex", alignItems: "center", gap: 6,
+            display: "flex", alignItems: "center", gap: 6, flexShrink: 0,
             background: T.accent, border: "none", borderRadius: 6,
             padding: "7px 14px", fontFamily: T.font, fontSize: 11, fontWeight: 700,
             color: "var(--background)", cursor: "pointer", letterSpacing: "0.04em",
@@ -234,7 +275,7 @@ export default function Shell() {
           <button
             onClick={() => { localStorage.setItem("easm_ui", "classic"); window.location.replace("/"); }}
             style={{
-              display: "flex", alignItems: "center", gap: 5,
+              display: "flex", alignItems: "center", gap: 5, flexShrink: 0,
               background: "transparent", border: `1px solid ${T.border}`,
               borderRadius: 6, padding: "6px 12px", fontFamily: T.font, fontSize: 10,
               color: T.text3, cursor: "pointer", transition: "color 0.12s, border-color 0.12s",
@@ -249,7 +290,7 @@ export default function Shell() {
           <button
             onClick={() => { clearToken(); clearTenantId(); window.location.reload(); }}
             style={{
-              display: "flex", alignItems: "center", gap: 5,
+              display: "flex", alignItems: "center", gap: 5, flexShrink: 0,
               background: "transparent", border: `1px solid ${T.border}`,
               borderRadius: 6, padding: "6px 12px", fontFamily: T.font, fontSize: 10,
               color: T.text3, cursor: "pointer", transition: "color 0.12s, border-color 0.12s",

@@ -1,17 +1,32 @@
-import { useState, useCallback } from "react";
+import { useState, useCallback, useEffect } from "react";
+
+function resolveTheme(theme) {
+  if (theme === "system") {
+    return window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+  }
+  return theme;
+}
 
 function applyTheme(theme) {
-  document.documentElement.setAttribute("data-theme", theme);
+  document.documentElement.setAttribute("data-theme", resolveTheme(theme));
   localStorage.setItem("theme", theme);
 }
 
 export function useTheme() {
   const [theme, setTheme] = useState(() => {
     const saved = localStorage.getItem("theme") || "dark";
-    // Apply synchronously during init to prevent flash of wrong theme
-    document.documentElement.setAttribute("data-theme", saved);
+    document.documentElement.setAttribute("data-theme", resolveTheme(saved));
     return saved;
   });
+
+  // When theme === "system", react to OS-level changes
+  useEffect(() => {
+    if (theme !== "system") return;
+    const mq = window.matchMedia("(prefers-color-scheme: dark)");
+    const handler = () => document.documentElement.setAttribute("data-theme", resolveTheme("system"));
+    mq.addEventListener("change", handler);
+    return () => mq.removeEventListener("change", handler);
+  }, [theme]);
 
   const toggle = useCallback(() => {
     setTheme(prev => {
@@ -26,5 +41,5 @@ export function useTheme() {
     setTheme(value);
   }, []);
 
-  return { theme, toggle, set, isDark: theme === "dark" };
+  return { theme, toggle, set, isDark: resolveTheme(theme) === "dark" };
 }

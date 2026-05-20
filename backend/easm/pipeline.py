@@ -42,7 +42,11 @@ class PipelineConfig:
     #   "securitytrails": "..."
     # }
 
-    # Alle Features aktiviert — kein Plan-Limit
+    # Scan-Modus: "passive" = OSINT only, "active" = full toolchain
+    # quick-scan is always passive regardless of this value.
+    scan_mode: str = "active"  # "passive" | "active"
+
+    # Phasen-Aktivierung (passive mode overrides these via _apply_passive_constraints)
     run_subfinder: bool = True
     run_naabu: bool = True
     run_theharvester: bool = True
@@ -76,6 +80,9 @@ class PipelineConfig:
 
     # Ramparts
     ramparts_llm: bool = False  # LLM-gestützte Analyse
+
+    # MCP — additional URLs configured by the user in Settings (bypasses port-scan discovery)
+    extra_mcp_urls: list = field(default_factory=list)
 
     # Pipeline
     max_workers: int = 4
@@ -128,6 +135,11 @@ class EASMPipeline:
         self.config = config or PipelineConfig()
         self._log = log_fn or (lambda tool, msg, level="info": None)
 
+        # Passive mode: disable every tool that makes direct contact with targets.
+        # Must happen before any phase method is called.
+        if self.config.scan_mode == "passive":
+            self._apply_passive_constraints()
+
         # Tool-Adapter initialisieren
         self.subfinder = SubfinderAdapter(api_keys=self.config.api_keys)
         self.naabu = NaabuAdapter()
@@ -135,6 +147,23 @@ class EASMPipeline:
         self.httpx = HTTPXAdapter()
         self.nuclei = NucleiAdapter()
         self.ramparts = RampartsAdapter()
+
+    def _apply_passive_constraints(self) -> None:
+        """Disable all tools that send packets to or probe target infrastructure.
+
+        Passive mode keeps only OSINT-based discovery (Subfinder, theHarvester)
+        and external API enrichment (HIBP, threat-intel). No port scanning,
+        no HTTP probing, no vulnerability templates, no MCP handshakes.
+        """
+        self.config.run_naabu    = False  # SYN/UDP port-scan
+        self.config.run_sslyze   = False  # TLS handshake (needs port-scan targets anyway)
+        self.config.run_httpx    = False  # HTTP GET probing
+        self.config.run_nuclei   = False  # Exploit/vuln templates
+        self.config.run_ramparts = False  # MCP JSON-RPC
+        self.config.run_mcp_scan = False  # Nuclei MCP templates
+        self._log("pipeline",
+                  "Passiver Modus aktiv — Naabu, SSLyze, HTTPX, Nuclei, Ramparts deaktiviert",
+                  "info")
 
     def run(self, domain: str, ip_ranges: list[str] = None,
             panos_version: str = "", progress_fn=None) -> PipelineReport:
@@ -207,12 +236,14 @@ class EASMPipeline:
         _notify("vuln", 70)
 
         # ── Phase 6: MCP-Tiefenanalyse (Ramparts) ────────────────────────────
-        if mcp_hosts and self.config.run_ramparts:
+        # Gate on run_ramparts only — _phase_mcp merges extra_mcp_urls internally,
+        # so configured URLs are scanned even when Naabu found no MCP hosts.
+        if self.config.run_ramparts:
             self._log("pipeline", "Phase 6/6: MCP-Tiefenanalyse (Ramparts)", "info")
             self._phase_mcp(report, mcp_hosts)
             self._log("pipeline", f"Phase 6 done: {len(report.findings_ramparts)} MCP-Findings", "info")
         else:
-            self._log("pipeline", "Phase 6/6: MCP-Analyse übersprungen (keine MCP-Hosts)", "info")
+            self._log("pipeline", "Phase 6/6: MCP-Analyse übersprungen", "info")
         _notify("mcp", 88)
 
         # ── Aggregation + Deduplication ───────────────────────────────────────
@@ -458,6 +489,17 @@ class EASMPipeline:
         except Exception as e:
             self._log("httpx", f"Phase-Fehler: {e}", "error")
 
+    def _merge_mcp_hosts(self, discovered: list[str]) -> list[str]:
+        """Merge port-scan-discovered MCP hosts with user-configured extra URLs."""
+        extra = [u for u in self.config.extra_mcp_urls if u]
+        if not extra:
+            return discovered
+        combined = list(dict.fromkeys(discovered + extra))  # deduplicate, preserve order
+        if extra:
+            self._log("pipeline", f"MCP: {len(extra)} konfigurierte URL(s) hinzugefügt "
+                      f"({', '.join(extra[:3])}{'…' if len(extra) > 3 else ''})", "info")
+        return combined
+
     def _phase_vulnscan(self, report: PipelineReport,
                           targets: list[str], mcp_hosts: list[str]):
         """Phase 4: Nuclei Vulnerability-Scan"""
@@ -474,11 +516,12 @@ class EASMPipeline:
                 log_fn=self._log
             )
 
-            # Separater MCP-Scan wenn MCP-Hosts gefunden
-            if mcp_hosts and self.config.run_mcp_scan:
+            # Separater MCP-Scan: entdeckte + konfigurierte Hosts
+            all_mcp = self._merge_mcp_hosts(mcp_hosts)
+            if all_mcp and self.config.run_mcp_scan:
                 mcp_findings = self.nuclei.run_mcp_scan(
                     tenant_id=self.tenant_id,
-                    targets=mcp_hosts,
+                    targets=all_mcp,
                     log_fn=self._log
                 )
                 findings.extend(mcp_findings)
@@ -489,13 +532,14 @@ class EASMPipeline:
 
     def _phase_mcp(self, report: PipelineReport, mcp_hosts: list[str]):
         """Phase 5: Ramparts MCP-Tiefenanalyse"""
-        if not mcp_hosts:
+        all_mcp = self._merge_mcp_hosts(mcp_hosts)
+        if not all_mcp:
             return
 
         try:
             findings = self.ramparts.run(
                 tenant_id=self.tenant_id,
-                mcp_urls=mcp_hosts,
+                mcp_urls=all_mcp,
                 use_llm=self.config.ramparts_llm,
                 log_fn=self._log
             )
