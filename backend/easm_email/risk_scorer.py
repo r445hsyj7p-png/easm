@@ -266,10 +266,11 @@ def score(
     pbl_hits = [h for h in rbl_hits if h.severity == "INFO"]
     if pbl_hits:
         ips_str = ", ".join(h.ip for h in pbl_hits[:3])
+        ellipsis = "…" if len(pbl_hits) > 3 else ""
         findings.append(EmailFinding(
             code="RBL_PBL",
             severity="INFO",
-            title=f"{len(pbl_hits)} MX-IP(s) auf Spamhaus PBL ({ips_str}{'…' if len(pbl_hits) > 3 else ''})",
+            title=f"{len(pbl_hits)} MX-IP(s) auf Spamhaus PBL ({ips_str}{ellipsis})",
             detail="PBL-Einträge betreffen Endkunden-IPs ohne direkten SMTP-Versand. Kein akutes Risiko für korrekt konfigurierte Mailserver.",
             remediation="Stellen Sie sicher, dass ausgehende Mails über einen SMTP-Relay-Server mit rDNS gesendet werden.",
         ))

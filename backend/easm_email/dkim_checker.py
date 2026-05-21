@@ -13,7 +13,7 @@ import dns.exception
 
 log = logging.getLogger(__name__)
 
-_PUBLIC_RESOLVERS = ["8.8.8.8", "8.8.4.4", "1.1.1.1", "1.0.0.1"]
+from .dns_utils import make_resolver as _make_resolver
 
 _COMMON_SELECTORS = [
     "google", "google2",            # Google Workspace
@@ -45,14 +45,6 @@ class DkimResult:
     raw: str
     weak: bool                  # RSA < 2048-bit or revoked (p= empty)
     revoked: bool               # p= is empty → key revoked
-
-
-def _make_resolver() -> dns.resolver.Resolver:
-    r = dns.resolver.Resolver(configure=False)
-    r.nameservers = _PUBLIC_RESOLVERS
-    r.timeout = 3.0
-    r.lifetime = 5.0
-    return r
 
 
 def _check_selector(selector: str, domain: str) -> DkimResult | None:

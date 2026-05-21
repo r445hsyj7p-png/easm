@@ -10,15 +10,20 @@ import os
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 
+import threading
+
 import dns.resolver
 import dns.exception
 import dns.reversename
 
 log = logging.getLogger(__name__)
 
-_PUBLIC_RESOLVERS = ["8.8.8.8", "8.8.4.4", "1.1.1.1", "1.0.0.1"]
+from .dns_utils import make_resolver as _make_resolver
+
 _REDIS_TTL = 6 * 3600
 _REDIS_PREFIX = "rbl:zen:"
+_redis_pool = None
+_redis_lock = threading.Lock()
 
 # Spamhaus ZEN return codes — https://www.spamhaus.org/faq/section/DNSBL%20Usage#200
 _ZEN_CODES: dict[str, tuple[str, str, str]] = {
@@ -43,23 +48,27 @@ class RblHit:
     return_code: str
 
 
-def _make_resolver() -> dns.resolver.Resolver:
-    r = dns.resolver.Resolver(configure=False)
-    r.nameservers = _PUBLIC_RESOLVERS
-    r.timeout = 3.0
-    r.lifetime = 5.0
-    return r
-
-
-def _redis_client():
+def _get_redis():
+    """Return a Redis client backed by a shared connection pool (thread-safe, lazy init)."""
+    global _redis_pool
+    if _redis_pool is None:
+        with _redis_lock:
+            if _redis_pool is None:
+                try:
+                    import redis as redis_lib
+                    pool = redis_lib.ConnectionPool.from_url(
+                        os.getenv("REDIS_URL", "redis://localhost:6379/0"),
+                        socket_connect_timeout=1,
+                        max_connections=4,
+                    )
+                    # Validate connection before storing the pool
+                    redis_lib.Redis(connection_pool=pool).ping()
+                    _redis_pool = pool
+                except Exception:
+                    return None
     try:
         import redis as redis_lib
-        client = redis_lib.Redis.from_url(
-            os.getenv("REDIS_URL", "redis://localhost:6379/0"),
-            socket_connect_timeout=1,
-        )
-        client.ping()
-        return client
+        return redis_lib.Redis(connection_pool=_redis_pool)
     except Exception:
         return None
 
@@ -83,7 +92,7 @@ def _build_zen_query(ip: str) -> str:
 
 def _lookup_zen(ip: str) -> list[RblHit]:
     """Check a single IP against Spamhaus ZEN with Redis caching."""
-    rdb = _redis_client()
+    rdb = _get_redis()
     cache_key = f"{_REDIS_PREFIX}{ip}"
 
     if rdb:

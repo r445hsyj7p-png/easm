@@ -6,12 +6,9 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass, field
 
-import dns.resolver
-import dns.exception
-
 log = logging.getLogger(__name__)
 
-_PUBLIC_RESOLVERS = ["8.8.8.8", "8.8.4.4", "1.1.1.1", "1.0.0.1"]
+from .dns_utils import make_resolver as _make_resolver, query_txt as _query_txt
 
 
 @dataclass
@@ -23,29 +20,6 @@ class MtaStsResult:
     policy_reachable: bool = False  # HTTPS policy file was accessible
     policy_error: str | None = None
     tls_rpt_present: bool = False   # _smtp._tls TXT record present
-
-
-def _make_resolver() -> dns.resolver.Resolver:
-    r = dns.resolver.Resolver(configure=False)
-    r.nameservers = _PUBLIC_RESOLVERS
-    r.timeout = 3.0
-    r.lifetime = 5.0
-    return r
-
-
-def _query_txt(resolver: dns.resolver.Resolver, name: str) -> list[str]:
-    try:
-        answers = resolver.resolve(name, "TXT")
-        results = []
-        for rdata in answers:
-            parts = [
-                s.decode("utf-8", errors="replace") if isinstance(s, bytes) else s
-                for s in rdata.strings
-            ]
-            results.append("".join(parts))
-        return results
-    except (dns.resolver.NXDOMAIN, dns.resolver.NoAnswer, dns.exception.DNSException):
-        return []
 
 
 def _fetch_policy(domain: str) -> tuple[str | None, str | None]:

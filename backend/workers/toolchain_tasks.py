@@ -1867,15 +1867,18 @@ def email_intel_rescan_due():
             """)
             rows = cur.fetchall()
 
-        for tenant_id, domain in rows:
-            import uuid as _uuid
-            job_id = str(_uuid.uuid4())
+        import uuid as _uuid
+        pending = [(str(_uuid.uuid4()), tid, dom) for tid, dom in rows]
+
+        if pending:
             with conn.cursor() as cur:
-                cur.execute("""
+                cur.executemany("""
                     INSERT INTO email_intel_jobs (id, tenant_id, domain, status, created_at)
                     VALUES (%s, %s, %s, 'pending', now())
-                """, (job_id, tenant_id, domain))
+                """, pending)
             conn.commit()
+
+        for job_id, tenant_id, domain in pending:
             celery_app.send_task(
                 "workers.email_intel_tasks.email_intel_analyze",
                 args=[job_id, domain, tenant_id],

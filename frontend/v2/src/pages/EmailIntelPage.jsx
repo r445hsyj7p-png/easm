@@ -306,6 +306,7 @@ export default function EmailIntelPage() {
     try {
       await apiFetch(`${base}/settings`, { method: "PUT", body: settings });
       toast.success("Re-Scan-Einstellungen gespeichert");
+      setShowSettings(false);
     } catch (e) {
       toast.error("Speichern fehlgeschlagen", { description: e.message });
     } finally {
@@ -313,8 +314,16 @@ export default function EmailIntelPage() {
     }
   };
 
-  const gs = activeResult?.graph_summary;
+  const gs = useMemo(() => activeResult?.graph_summary, [activeResult?.graph_summary]);
   const isRunning = activeResult?.status === "running" || activeResult?.status === "pending";
+
+  const getStatusText = () => {
+    if (activeResult?.status === "complete" && activeResult.completed_at)
+      return `Analysiert: ${new Date(activeResult.completed_at).toLocaleString("de-DE")}`;
+    if (isRunning) return "Analyse läuft…";
+    if (activeResult?.status === "failed") return "Analyse fehlgeschlagen";
+    return "Ausstehend";
+  };
   const totalPages = Math.ceil(domains.length / PAGE_SIZE);
   const pagedDomains = useMemo(
     () => domains.slice(page * PAGE_SIZE, (page + 1) * PAGE_SIZE),
@@ -493,11 +502,7 @@ export default function EmailIntelPage() {
                   {activeResult.domain}
                 </div>
                 <div style={{ fontFamily: T.fontSans, fontSize: 10, color: T.text4, marginTop: 2 }}>
-                  {activeResult.status === "complete" && activeResult.completed_at
-                    ? `Analysiert: ${new Date(activeResult.completed_at).toLocaleString("de-DE")}`
-                    : isRunning ? "Analyse läuft…"
-                    : activeResult.status === "failed" ? "Analyse fehlgeschlagen"
-                    : "Ausstehend"}
+                  {getStatusText()}
                 </div>
               </div>
 

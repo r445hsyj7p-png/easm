@@ -129,35 +129,42 @@ def email_intel_analyze(self, job_id: str, domain: str, tenant_id: str):
         ]
         enriched_ips = enrich_ip_list(ip_tuples)
 
-        # ── Step 6: DKIM discovery (non-fatal) ───────────────────────────
-        dkim_results = []
-        try:
-            from easm_email.dkim_checker import discover as dkim_discover
-            dkim_results = dkim_discover(domain)
-            log.info("[email_intel] dkim selectors found=%d", len(dkim_results))
-        except Exception as e:
-            log.warning("[email_intel] dkim discovery failed: %s", e)
+        # ── Steps 6-8: DKIM + RBL + MTA-STS in parallel (all non-fatal) ──
+        from concurrent.futures import ThreadPoolExecutor as _TPE
 
-        # ── Step 7: RBL check (non-fatal) ────────────────────────────────
-        rbl_hits = []
-        try:
-            from easm_email.rbl_checker import check_ips as rbl_check
-            mx_ips = [ip.address for mx in mx_servers for ip in mx.ips]
-            rbl_hits = rbl_check(mx_ips)
-            if rbl_hits:
-                log.warning("[email_intel] rbl hits=%d for domain=%s", len(rbl_hits), domain)
-        except Exception as e:
-            log.warning("[email_intel] rbl check failed: %s", e)
+        _mx_ips = [ip.address for mx in mx_servers for ip in mx.ips]
 
-        # ── Step 8: MTA-STS + TLS-RPT (non-fatal) ───────────────────────
-        mta_sts = None
-        try:
-            from easm_email.mta_sts_checker import check as mta_sts_check
-            mta_sts = mta_sts_check(domain)
+        def _run_dkim():
+            from easm_email.dkim_checker import discover as _disc
+            results = _disc(domain)
+            log.info("[email_intel] dkim selectors found=%d", len(results))
+            return results
+
+        def _run_rbl():
+            from easm_email.rbl_checker import check_ips as _chk
+            hits = _chk(_mx_ips)
+            if hits:
+                log.warning("[email_intel] rbl hits=%d for domain=%s", len(hits), domain)
+            return hits
+
+        def _run_mta():
+            from easm_email.mta_sts_checker import check as _chk
+            result = _chk(domain)
             log.info("[email_intel] mta_sts declared=%s mode=%s tls_rpt=%s",
-                     mta_sts.dns_declared, mta_sts.mode, mta_sts.tls_rpt_present)
-        except Exception as e:
-            log.warning("[email_intel] mta_sts check failed: %s", e)
+                     result.dns_declared, result.mode, result.tls_rpt_present)
+            return result
+
+        dkim_results, rbl_hits, mta_sts = [], [], None
+        with _TPE(max_workers=3) as _pool:
+            _f_dkim = _pool.submit(_run_dkim)
+            _f_rbl  = _pool.submit(_run_rbl)
+            _f_mta  = _pool.submit(_run_mta)
+            try: dkim_results = _f_dkim.result()
+            except Exception as e: log.warning("[email_intel] dkim failed: %s", e)
+            try: rbl_hits = _f_rbl.result()
+            except Exception as e: log.warning("[email_intel] rbl failed: %s", e)
+            try: mta_sts = _f_mta.result()
+            except Exception as e: log.warning("[email_intel] mta_sts failed: %s", e)
 
         # ── Step 9: Graph (Neo4j — non-fatal on failure) ──────────────────
         try:
