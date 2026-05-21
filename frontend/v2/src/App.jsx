@@ -15,6 +15,7 @@ import ScansPage            from "./pages/ScansPage";
 import SettingsPage         from "./pages/SettingsPage";
 import TargetsPage          from "./pages/TargetsPage";
 import VulnerabilitiesPage  from "./pages/VulnerabilitiesPage";
+import EmailIntelPage      from "./pages/EmailIntelPage";
 
 // Ensure preference is set when running in v2
 if (!localStorage.getItem("easm_ui")) {
@@ -82,6 +83,7 @@ export default function App() {
               <Route path="/scans"           element={<ScansPage />}           />
               <Route path="/targets"         element={<TargetsPage />}         />
               <Route path="/vulnerabilities" element={<VulnerabilitiesPage />} />
+              <Route path="/email-intel"     element={<EmailIntelPage />}      />
               <Route path="/settings"        element={<SettingsPage />}        />
               <Route path="*"          element={<Navigate to="/dashboard" replace />} />
             </Route>

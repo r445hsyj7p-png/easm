@@ -1,0 +1,23 @@
+# Email Intelligence worker dependencies
+# Subset of requirements.txt — no security scanner tools needed
+
+fastapi==0.115.0
+pydantic[email]==2.7.0
+
+# Database
+sqlalchemy==2.0.35
+psycopg2-binary==2.9.9
+
+# Task queue
+celery[redis]==5.3.6
+redis==5.0.8
+
+# DNS resolution (already in main requirements.txt)
+dnspython==2.6.1
+
+# IP/ASN enrichment
+ipwhois==1.3.0
+netaddr==1.3.0
+
+# Neo4j graph database
+neo4j==5.20.0
