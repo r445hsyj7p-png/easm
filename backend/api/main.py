@@ -246,7 +246,7 @@ except ImportError:
 try:
     from api.email_intel import router as email_intel_router
     app.include_router(email_intel_router)
-except ImportError:
+except Exception:
     pass
 
 # ─── Docs (gesichert, nur MSSP-Rollen) ───────────────────────────────────────

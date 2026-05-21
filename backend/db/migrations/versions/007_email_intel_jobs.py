@@ -15,8 +15,8 @@ depends_on = None
 def upgrade() -> None:
     op.execute("""
         CREATE TABLE IF NOT EXISTS email_intel_jobs (
-            id            UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-            tenant_id     UUID NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+            id            TEXT PRIMARY KEY DEFAULT gen_random_uuid()::text,
+            tenant_id     TEXT NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
             domain        TEXT NOT NULL,
             status        TEXT NOT NULL DEFAULT 'pending',
             risk_score    SMALLINT,
