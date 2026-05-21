@@ -10,16 +10,18 @@ Team Cymru DNS lookup format:
 from __future__ import annotations
 import ipaddress
 import logging
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 
 import dns.resolver
 import dns.exception
 
-from .provider_registry import classify_ip, ProviderEntry
+from .provider_registry import classify_ip
 
 log = logging.getLogger(__name__)
 
 _PUBLIC_RESOLVERS = ["8.8.8.8", "8.8.4.4", "1.1.1.1"]
+_MAX_IP_WORKERS = 10
 
 
 @dataclass
@@ -96,30 +98,41 @@ def _cymru_asn_name(resolver: dns.resolver.Resolver, asn: str) -> str | None:
     return None
 
 
+def _enrich_one(address: str, version: int, ptr: str | None) -> EnrichedIP:
+    resolver = _make_resolver()
+    asn = _cymru_lookup(resolver, address, version)
+    provider = classify_ip(address, ptr)
+    return EnrichedIP(
+        address=address,
+        version=version,
+        ptr=ptr,
+        asn=asn,
+        provider_name=provider.name if provider else "Unknown",
+        provider_category=provider.category if provider else "unknown",
+    )
+
+
 def enrich_ip_list(ips: list[tuple[str, int, str | None]]) -> list[EnrichedIP]:
     """
     Enrich a list of (address, version, ptr) tuples.
-    De-duplicates by address before enriching.
+    De-duplicates by address and enriches all IPs concurrently.
     """
-    resolver = _make_resolver()
-    seen: set[str] = set()
-    results: list[EnrichedIP] = []
-
+    seen: dict[str, tuple[str, int, str | None]] = {}
     for address, version, ptr in ips:
-        if address in seen:
-            continue
-        seen.add(address)
+        if address not in seen:
+            seen[address] = (address, version, ptr)
 
-        asn = _cymru_lookup(resolver, address, version)
-        provider = classify_ip(address, ptr)
+    unique = list(seen.values())
+    if not unique:
+        return []
 
-        results.append(EnrichedIP(
-            address=address,
-            version=version,
-            ptr=ptr,
-            asn=asn,
-            provider_name=provider.name if provider else "Unknown",
-            provider_category=provider.category if provider else "unknown",
-        ))
-
+    workers = min(len(unique), _MAX_IP_WORKERS)
+    results: list[EnrichedIP] = [None] * len(unique)  # type: ignore[list-item]
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        futures = {
+            pool.submit(_enrich_one, addr, ver, ptr): i
+            for i, (addr, ver, ptr) in enumerate(unique)
+        }
+        for fut in as_completed(futures):
+            results[futures[fut]] = fut.result()
     return results

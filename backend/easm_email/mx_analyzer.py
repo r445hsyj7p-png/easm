@@ -4,6 +4,7 @@ Public DNS only. No port probing.
 """
 from __future__ import annotations
 import logging
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 
 import dns.resolver
@@ -15,6 +16,7 @@ from .dns_collector import MxRecord
 log = logging.getLogger(__name__)
 
 _PUBLIC_RESOLVERS = ["8.8.8.8", "8.8.4.4", "1.1.1.1"]
+_MAX_MX_WORKERS = 8
 
 
 @dataclass
@@ -49,21 +51,35 @@ def _ptr(resolver: dns.resolver.Resolver, ip: str) -> str | None:
 
 
 def _resolve_host(resolver: dns.resolver.Resolver, fqdn: str) -> list[ResolvedIP]:
-    ips: list[ResolvedIP] = []
+    raw: list[tuple[str, int]] = []
     for qtype, version in [("A", 4), ("AAAA", 6)]:
         try:
-            answers = resolver.resolve(fqdn, qtype)
-            for rdata in answers:
-                addr = str(rdata)
-                ips.append(ResolvedIP(address=addr, version=version, ptr=_ptr(resolver, addr)))
+            for rdata in resolver.resolve(fqdn, qtype):
+                raw.append((str(rdata), version))
         except dns.exception.DNSException:
             pass
-    return ips
+
+    if not raw:
+        return []
+
+    # PTR lookups in parallel (one thread per IP address)
+    results: list[ResolvedIP] = [ResolvedIP(addr, ver) for addr, ver in raw]
+    with ThreadPoolExecutor(max_workers=len(raw)) as pool:
+        futures = {pool.submit(_ptr, resolver, addr): i for i, (addr, _) in enumerate(raw)}
+        for fut in as_completed(futures):
+            results[futures[fut]].ptr = fut.result()
+    return results
+
+
+def _resolve_one(mx: MxRecord) -> MxServerInfo:
+    resolver = _make_resolver()
+    return MxServerInfo(fqdn=mx.fqdn, priority=mx.priority, ips=_resolve_host(resolver, mx.fqdn))
 
 
 def analyze(mx_records: list[MxRecord]) -> list[MxServerInfo]:
-    resolver = _make_resolver()
-    return [
-        MxServerInfo(fqdn=mx.fqdn, priority=mx.priority, ips=_resolve_host(resolver, mx.fqdn))
-        for mx in mx_records
-    ]
+    if not mx_records:
+        return []
+    workers = min(len(mx_records), _MAX_MX_WORKERS)
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        futures = {pool.submit(_resolve_one, mx): mx for mx in mx_records}
+        return [fut.result() for fut in as_completed(futures)]

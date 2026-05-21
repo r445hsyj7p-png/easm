@@ -1,10 +1,10 @@
-import { useState, useEffect, useRef, useCallback } from "react";
+import { useState, useEffect, useRef, useCallback, useMemo } from "react";
 import { Mail, Search, RefreshCw, Trash2, ChevronDown, ChevronUp, AlertTriangle } from "lucide-react";
 import { toast } from "sonner";
 import { T, alpha } from "../theme";
 import { apiFetch } from "../api/client";
 import { useApp } from "../context/AppContext";
-import { EmailRiskBadge } from "../components/email/EmailRiskBadge";
+import { EmailRiskBadge, BAND_COLORS } from "../components/email/EmailRiskBadge";
 import { ProviderTable } from "../components/email/ProviderTable";
 import { EmailGraph } from "../components/email/EmailGraph";
 
@@ -88,7 +88,7 @@ function SummaryCard({ label, value, sub }) {
 }
 
 function DomainRow({ item, onSelect, onDelete, isActive }) {
-  const color = { Low: T.accent, Medium: "var(--medium)", High: "var(--high)", Critical: "var(--critical)" }[item.risk_band] ?? T.text4;
+  const color = (BAND_COLORS[item.risk_band] ?? { fg: T.text4 }).fg;
   return (
     <div
       onClick={() => onSelect(item)}
@@ -135,11 +135,14 @@ function DomainRow({ item, onSelect, onDelete, isActive }) {
   );
 }
 
+const PAGE_SIZE = 30;
+
 export default function EmailIntelPage() {
   const { tenantId } = useApp();
   const [domain, setDomain] = useState("");
   const [analyzing, setAnalyzing] = useState(false);
   const [domains, setDomains] = useState([]);
+  const [page, setPage] = useState(0);
   const [activeResult, setActiveResult] = useState(null);
   const [polling, setPolling] = useState(null);   // job_id being polled
   const pollRef = useRef(null);
@@ -151,6 +154,7 @@ export default function EmailIntelPage() {
     try {
       const data = await apiFetch(`${base}/domains`);
       setDomains(Array.isArray(data) ? data : []);
+      setPage(0);
     } catch { /* silent */ }
   }, [base]);
 
@@ -158,17 +162,19 @@ export default function EmailIntelPage() {
 
   // Poll for job completion
   useEffect(() => {
-    if (!polling) {
-      if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null; }
-      return;
-    }
+    if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null; }
+    if (!polling) return;
     pollRef.current = setInterval(async () => {
       try {
         const result = await apiFetch(`${base}/result/${polling}`);
-        if (result.status === "complete" || result.status === "failed") {
+        const done = result.status === "complete" || result.status === "failed";
+        setActiveResult(prev => {
+          if (!done && prev?.status === result.status) return prev;
+          return result;
+        });
+        if (done) {
           setPolling(null);
           setAnalyzing(false);
-          setActiveResult(result);
           loadDomains();
           if (result.status === "complete") {
             toast.success(`Analyse abgeschlossen: ${result.domain}`, {
@@ -177,12 +183,10 @@ export default function EmailIntelPage() {
           } else {
             toast.error("Analyse fehlgeschlagen", { description: result.error });
           }
-        } else {
-          setActiveResult(result);  // show partial progress
         }
       } catch { /* silent */ }
     }, 2500);
-    return () => clearInterval(pollRef.current);
+    return () => { clearInterval(pollRef.current); pollRef.current = null; };
   }, [polling, base, loadDomains]);
 
   const handleAnalyze = async () => {
@@ -221,10 +225,15 @@ export default function EmailIntelPage() {
   };
 
   const isRunning = activeResult?.status === "running" || activeResult?.status === "pending";
-  // IPs now carry provider_name/provider_category from the backend JSONB
-  const enrichedIps = activeResult?.mx_records
-    ?.flatMap(mx => mx.ips || [])
-    ?? [];
+  const totalPages = Math.ceil(domains.length / PAGE_SIZE);
+  const pagedDomains = useMemo(
+    () => domains.slice(page * PAGE_SIZE, (page + 1) * PAGE_SIZE),
+    [domains, page],
+  );
+  const enrichedIps = useMemo(
+    () => activeResult?.mx_records?.flatMap(mx => mx.ips || []) ?? [],
+    [activeResult?.mx_records],
+  );
 
   return (
     <div style={{ display: "flex", gap: 20, height: "calc(100vh - 80px)", overflow: "hidden" }}>
@@ -273,7 +282,7 @@ export default function EmailIntelPage() {
               Noch keine Analysen.<br />Domain eingeben und Enter.
             </div>
           )}
-          {domains.map(item => (
+          {pagedDomains.map(item => (
             <DomainRow
               key={item.job_id}
               item={item}
@@ -283,6 +292,34 @@ export default function EmailIntelPage() {
             />
           ))}
         </div>
+
+        {/* Pagination controls */}
+        {totalPages > 1 && (
+          <div style={{
+            display: "flex", alignItems: "center", justifyContent: "space-between",
+            padding: "6px 10px", borderTop: `1px solid ${T.border}`,
+            fontFamily: T.fontSans, fontSize: 10, color: T.text4, flexShrink: 0,
+          }}>
+            <button
+              onClick={() => setPage(p => Math.max(0, p - 1))}
+              disabled={page === 0}
+              style={{
+                background: "none", border: "none", cursor: page === 0 ? "default" : "pointer",
+                color: page === 0 ? T.text4 : T.text2, padding: "2px 6px",
+              }}
+            >‹</button>
+            <span>{page + 1} / {totalPages}</span>
+            <button
+              onClick={() => setPage(p => Math.min(totalPages - 1, p + 1))}
+              disabled={page >= totalPages - 1}
+              style={{
+                background: "none", border: "none",
+                cursor: page >= totalPages - 1 ? "default" : "pointer",
+                color: page >= totalPages - 1 ? T.text4 : T.text2, padding: "2px 6px",
+              }}
+            >›</button>
+          </div>
+        )}
       </aside>
 
       {/* ── Main content ──────────────────────────────────────────────────── */}

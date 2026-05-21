@@ -15,6 +15,8 @@ from celery import Celery
 from celery.signals import worker_ready
 from datetime import datetime, timezone
 
+from easm_email.job_status import JobStatus
+
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
 log = logging.getLogger(__name__)
@@ -97,7 +99,7 @@ def email_intel_analyze(self, job_id: str, domain: str, tenant_id: str):
     log.info("[email_intel] start domain=%s job=%s", domain, job_id)
     conn = _db_conn()
     try:
-        _update_job(conn, job_id, status="running")
+        _update_job(conn, job_id, status=JobStatus.RUNNING)
 
         # ── Step 1: DNS collection ────────────────────────────────────────
         from easm_email.dns_collector import collect
@@ -159,8 +161,6 @@ def email_intel_analyze(self, job_id: str, domain: str, tenant_id: str):
             "asn_count": result.asn_count,
             "mx_count": result.mx_count,
         })
-        # Build lookup so provider/ASN info is stored in mx_records JSONB.
-        # The frontend uses this to show provider classification without a Neo4j query.
         enriched_by_addr = {e.address: e for e in enriched_ips}
 
         def _ip_dict(ip) -> dict:
@@ -181,7 +181,7 @@ def email_intel_analyze(self, job_id: str, domain: str, tenant_id: str):
         ])
 
         _update_job(conn, job_id,
-            status="complete",
+            status=JobStatus.COMPLETE,
             risk_score=result.score,
             spf_raw=bundle.spf_raw,
             dmarc_raw=bundle.dmarc_raw,
@@ -195,7 +195,7 @@ def email_intel_analyze(self, job_id: str, domain: str, tenant_id: str):
     except Exception as exc:
         log.exception("[email_intel] failed domain=%s: %s", domain, exc)
         try:
-            _update_job(conn, job_id, status="failed", error=str(exc)[:500])
+            _update_job(conn, job_id, status=JobStatus.FAILED, error=str(exc)[:500])
         except Exception:
             pass
         raise self.retry(exc=exc, countdown=30)
