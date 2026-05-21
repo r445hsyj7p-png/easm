@@ -40,6 +40,9 @@ def score(
     dmarc: DmarcPolicy,
     enriched_ips: list[EnrichedIP],
     mx_servers: list[MxServerInfo],
+    dkim_results=None,   # list[DkimResult] | None
+    rbl_hits=None,       # list[RblHit] | None
+    mta_sts=None,        # MtaStsResult | None
 ) -> ScoreResult:
     points = 0
     findings: list[EmailFinding] = []
@@ -212,6 +215,109 @@ def score(
             detail="Ohne MX-Records ist kein E-Mail-Empfang konfiguriert.",
             remediation="Prüfen Sie, ob diese Domain E-Mail empfangen soll.",
         ))
+
+    # ── DKIM ───────────────────────────────────────────────────────────────
+    dkim_results = dkim_results or []
+    if not dkim_results:
+        points += 5
+        findings.append(EmailFinding(
+            code="DKIM_NOT_FOUND", severity="LOW",
+            title="Kein DKIM-Eintrag unter gängigen Selektoren gefunden",
+            detail="Keiner der ~20 getesteten Standard-Selektoren (google, selector1, k1 …) ist publiziert. "
+                   "Custom-Selektoren werden nicht geprüft — DKIM kann dennoch aktiv sein.",
+            remediation="Publizieren Sie einen DKIM-TXT-Record und konfigurieren Sie Signing in Ihrem Mail-System.",
+        ))
+    else:
+        for r in dkim_results:
+            if r.revoked:
+                points += 10
+                findings.append(EmailFinding(
+                    code="DKIM_KEY_REVOKED", severity="HIGH",
+                    title=f"DKIM-Schlüssel widerrufen (Selektor: {r.selector})",
+                    detail="Ein leerer p=-Tag signalisiert einen zurückgezogenen Schlüssel. "
+                           "Empfangende Server werden DKIM-Signaturen mit diesem Selektor ablehnen.",
+                    remediation="Entfernen Sie den widerrufenen Record oder ersetzen Sie ihn durch einen aktiven Schlüssel.",
+                ))
+            elif r.weak:
+                points += 12
+                bits_str = f"{r.key_bits_estimate} bit" if r.key_bits_estimate else "unbekannte Länge"
+                findings.append(EmailFinding(
+                    code="DKIM_WEAK_KEY", severity="HIGH",
+                    title=f"Schwacher DKIM-RSA-Schlüssel (Selektor: {r.selector}, ~{bits_str})",
+                    detail=f"RSA-Schlüssel unter 2048 bit gelten seit RFC 8301 als unsicher und können gebrochen werden.",
+                    remediation="Ersetzen Sie den Schlüssel durch RSA-2048 oder besser Ed25519.",
+                ))
+
+    # ── RBL ────────────────────────────────────────────────────────────────
+    rbl_hits = rbl_hits or []
+    # PBL hits (severity=INFO) don't contribute to score — expected for many corporate IPs
+    scored_hits = [h for h in rbl_hits if h.severity != "INFO"]
+    for hit in scored_hits:
+        penalty = 20 if hit.severity == "CRITICAL" else 12
+        points += penalty
+        findings.append(EmailFinding(
+            code=f"RBL_{hit.list_name.replace('-', '_')}",
+            severity=hit.severity,
+            title=f"MX-IP {hit.ip} auf Spamhaus {hit.list_name} gelistet",
+            detail=hit.description,
+            remediation="Prüfen Sie den Host auf Kompromittierung und beantragen Sie eine Delistung bei Spamhaus.",
+        ))
+    # PBL as INFO finding (no points)
+    pbl_hits = [h for h in rbl_hits if h.severity == "INFO"]
+    if pbl_hits:
+        ips_str = ", ".join(h.ip for h in pbl_hits[:3])
+        findings.append(EmailFinding(
+            code="RBL_PBL",
+            severity="INFO",
+            title=f"{len(pbl_hits)} MX-IP(s) auf Spamhaus PBL ({ips_str}{'…' if len(pbl_hits) > 3 else ''})",
+            detail="PBL-Einträge betreffen Endkunden-IPs ohne direkten SMTP-Versand. Kein akutes Risiko für korrekt konfigurierte Mailserver.",
+            remediation="Stellen Sie sicher, dass ausgehende Mails über einen SMTP-Relay-Server mit rDNS gesendet werden.",
+        ))
+
+    # ── MTA-STS ────────────────────────────────────────────────────────────
+    if mta_sts is not None:
+        if not mta_sts.dns_declared:
+            points += 5
+            findings.append(EmailFinding(
+                code="MTA_STS_MISSING", severity="LOW",
+                title="MTA-STS nicht konfiguriert",
+                detail="Ohne MTA-STS (RFC 8461) kann STARTTLS beim E-Mail-Empfang durch einen Angreifer downgraded werden.",
+                remediation="Erstellen Sie _mta-sts.<domain> TXT-Record und hosten Sie die Policy-Datei unter https://mta-sts.<domain>/.well-known/mta-sts.txt",
+            ))
+        else:
+            if not mta_sts.policy_reachable:
+                points += 10
+                findings.append(EmailFinding(
+                    code="MTA_STS_UNREACHABLE", severity="MEDIUM",
+                    title="MTA-STS deklariert, aber Policy-Datei nicht erreichbar",
+                    detail=f"Der DNS-Record existiert, aber https://mta-sts.<domain>/.well-known/mta-sts.txt ist nicht abrufbar"
+                           + (f": {mta_sts.policy_error}" if mta_sts.policy_error else "."),
+                    remediation="Stellen Sie sicher, dass der Webserver für mta-sts.<domain> korrekt konfiguriert ist und HTTPS antwortet.",
+                ))
+            elif mta_sts.mode == "testing":
+                points += 3
+                findings.append(EmailFinding(
+                    code="MTA_STS_TESTING", severity="LOW",
+                    title="MTA-STS im Testing-Mode — keine Durchsetzung",
+                    detail="mode=testing protokolliert Fehler, erzwingt TLS aber nicht.",
+                    remediation="Wechseln Sie nach erfolgreichen Tests zu mode=enforce.",
+                ))
+            elif mta_sts.mode == "none":
+                points += 8
+                findings.append(EmailFinding(
+                    code="MTA_STS_DISABLED", severity="MEDIUM",
+                    title="MTA-STS deklariert aber deaktiviert (mode=none)",
+                    detail="mode=none schaltet MTA-STS explizit aus, obwohl der DNS-Record vorhanden ist.",
+                    remediation="Setzen Sie mode=enforce oder entfernen Sie den DNS-Record.",
+                ))
+
+        if not mta_sts.tls_rpt_present:
+            findings.append(EmailFinding(
+                code="TLS_RPT_MISSING", severity="INFO",
+                title="TLS-RPT nicht konfiguriert",
+                detail="Ohne _smtp._tls TXT-Record erhalten Sie keine Berichte über TLS-Verbindungsfehler bei eingehenden Mails.",
+                remediation="Erstellen Sie: _smtp._tls.<domain> TXT \"v=TLSRPTv1; rua=mailto:tls-rpt@ihre-domain.com\"",
+            ))
 
     # ── Compute stats ──────────────────────────────────────────────────────
     providers = collect_all_includes(spf_tree) if spf_tree else set()

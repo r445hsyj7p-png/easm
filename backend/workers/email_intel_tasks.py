@@ -129,7 +129,37 @@ def email_intel_analyze(self, job_id: str, domain: str, tenant_id: str):
         ]
         enriched_ips = enrich_ip_list(ip_tuples)
 
-        # ── Step 6: Graph (Neo4j — non-fatal on failure) ──────────────────
+        # ── Step 6: DKIM discovery (non-fatal) ───────────────────────────
+        dkim_results = []
+        try:
+            from easm_email.dkim_checker import discover as dkim_discover
+            dkim_results = dkim_discover(domain)
+            log.info("[email_intel] dkim selectors found=%d", len(dkim_results))
+        except Exception as e:
+            log.warning("[email_intel] dkim discovery failed: %s", e)
+
+        # ── Step 7: RBL check (non-fatal) ────────────────────────────────
+        rbl_hits = []
+        try:
+            from easm_email.rbl_checker import check_ips as rbl_check
+            mx_ips = [ip.address for mx in mx_servers for ip in mx.ips]
+            rbl_hits = rbl_check(mx_ips)
+            if rbl_hits:
+                log.warning("[email_intel] rbl hits=%d for domain=%s", len(rbl_hits), domain)
+        except Exception as e:
+            log.warning("[email_intel] rbl check failed: %s", e)
+
+        # ── Step 8: MTA-STS + TLS-RPT (non-fatal) ───────────────────────
+        mta_sts = None
+        try:
+            from easm_email.mta_sts_checker import check as mta_sts_check
+            mta_sts = mta_sts_check(domain)
+            log.info("[email_intel] mta_sts declared=%s mode=%s tls_rpt=%s",
+                     mta_sts.dns_declared, mta_sts.mode, mta_sts.tls_rpt_present)
+        except Exception as e:
+            log.warning("[email_intel] mta_sts check failed: %s", e)
+
+        # ── Step 9: Graph (Neo4j — non-fatal on failure) ──────────────────
         try:
             from easm_email.graph_builder import upsert_analysis, delete_domain_graph
             delete_domain_graph(domain, tenant_id)
@@ -142,9 +172,12 @@ def email_intel_analyze(self, job_id: str, domain: str, tenant_id: str):
         except Exception as neo_err:
             log.warning("[email_intel] neo4j write skipped: %s", neo_err)
 
-        # ── Step 7: Risk scoring ──────────────────────────────────────────
+        # ── Step 10: Risk scoring ─────────────────────────────────────────
         from easm_email.risk_scorer import score as risk_score
-        result = risk_score(spf_tree, dmarc, enriched_ips, mx_servers)
+        result = risk_score(spf_tree, dmarc, enriched_ips, mx_servers,
+                            dkim_results=dkim_results,
+                            rbl_hits=rbl_hits,
+                            mta_sts=mta_sts)
 
         findings_json = json.dumps([
             {
@@ -161,6 +194,11 @@ def email_intel_analyze(self, job_id: str, domain: str, tenant_id: str):
             "ip_count": result.ip_count,
             "asn_count": result.asn_count,
             "mx_count": result.mx_count,
+            "dkim_selectors_found": len(dkim_results),
+            "dkim_weak_keys": sum(1 for r in dkim_results if r.weak),
+            "rbl_listed_count": len([h for h in rbl_hits if h.severity != "INFO"]),
+            "mta_sts_mode": mta_sts.mode if mta_sts else None,
+            "tls_rpt_present": mta_sts.tls_rpt_present if mta_sts else False,
         })
         enriched_by_addr = {e.address: e for e in enriched_ips}
 

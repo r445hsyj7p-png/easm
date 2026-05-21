@@ -635,3 +635,68 @@ async def email_intel_delete_domain(
         DELETE FROM email_intel_jobs WHERE tenant_id = :tid AND domain = :domain
     """), {"tid": tenant_id, "domain": domain})
     await db.commit()
+
+
+async def email_intel_get_history(
+    db: AsyncSession, tenant_id: str, domain: str, limit: int = 20,
+) -> list[dict]:
+    rows = (await db.execute(text("""
+        SELECT id, risk_score, created_at,
+               jsonb_array_length(COALESCE(findings, '[]'::jsonb)) AS findings_count
+        FROM email_intel_jobs
+        WHERE tenant_id = :tid AND domain = :domain AND status = 'complete'
+        ORDER BY created_at DESC
+        LIMIT :limit
+    """), {"tid": tenant_id, "domain": domain, "limit": limit})).mappings().all()
+    return [dict(r) for r in rows]
+
+
+async def email_intel_get_settings(
+    db: AsyncSession, tenant_id: str,
+) -> dict:
+    row = (await db.execute(text("""
+        SELECT auto_rescan_enabled, rescan_interval_days
+        FROM email_intel_settings
+        WHERE tenant_id = :tid
+    """), {"tid": tenant_id})).mappings().first()
+    if row:
+        return dict(row)
+    return {"auto_rescan_enabled": False, "rescan_interval_days": 7}
+
+
+async def email_intel_save_settings(
+    db: AsyncSession, tenant_id: str, enabled: bool, interval_days: int,
+) -> None:
+    await db.execute(text("""
+        INSERT INTO email_intel_settings (tenant_id, auto_rescan_enabled, rescan_interval_days, updated_at)
+        VALUES (:tid, :enabled, :interval, now())
+        ON CONFLICT (tenant_id) DO UPDATE SET
+            auto_rescan_enabled  = EXCLUDED.auto_rescan_enabled,
+            rescan_interval_days = EXCLUDED.rescan_interval_days,
+            updated_at           = EXCLUDED.updated_at
+    """), {"tid": tenant_id, "enabled": enabled, "interval": interval_days})
+    await db.commit()
+
+
+async def email_intel_list_due_domains(
+    db: AsyncSession, limit: int = 10,
+) -> list[dict]:
+    """Return domains due for automatic re-scan (one row per tenant+domain)."""
+    rows = (await db.execute(text("""
+        SELECT DISTINCT ON (j.tenant_id, j.domain)
+            j.tenant_id, j.domain
+        FROM email_intel_jobs j
+        JOIN email_intel_settings s ON s.tenant_id = j.tenant_id
+        WHERE s.auto_rescan_enabled = true
+          AND j.status = 'complete'
+          AND j.completed_at < now() - (s.rescan_interval_days || ' days')::interval
+          AND NOT EXISTS (
+              SELECT 1 FROM email_intel_jobs j2
+              WHERE j2.tenant_id = j.tenant_id
+                AND j2.domain    = j.domain
+                AND j2.status IN ('pending', 'running')
+          )
+        ORDER BY j.tenant_id, j.domain, j.completed_at ASC
+        LIMIT :limit
+    """), {"limit": limit})).mappings().all()
+    return [dict(r) for r in rows]

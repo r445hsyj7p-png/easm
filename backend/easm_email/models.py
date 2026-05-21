@@ -36,6 +36,11 @@ class GraphSummary(BaseModel):
     mx_count: int
     ip_count: int
     asn_count: int
+    dkim_selectors_found: int = 0
+    dkim_weak_keys: int = 0
+    rbl_listed_count: int = 0
+    mta_sts_mode: Optional[str] = None
+    tls_rpt_present: bool = False
 
 
 class AnalyzeResponse(BaseModel):
@@ -68,3 +73,16 @@ class DomainListItem(BaseModel):
     risk_band: Optional[str] = None
     created_at: datetime
     completed_at: Optional[datetime] = None
+
+
+class DomainHistoryItem(BaseModel):
+    job_id: str
+    risk_score: int
+    risk_band: str
+    findings_count: int
+    created_at: datetime
+
+
+class EmailIntelSettings(BaseModel):
+    auto_rescan_enabled: bool = False
+    rescan_interval_days: int = 7

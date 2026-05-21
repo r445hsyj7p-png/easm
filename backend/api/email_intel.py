@@ -17,6 +17,7 @@ from easm_email.job_status import JobStatus
 from easm_email.models import (
     AnalyzeRequest, AnalyzeResponse, ResultResponse,
     EmailFinding, GraphSummary, DomainListItem,
+    DomainHistoryItem, EmailIntelSettings,
 )
 from easm_email.risk_scorer import risk_band as _risk_band
 
@@ -167,6 +168,66 @@ async def list_domains(
         )
         for r in rows
     ]
+
+
+# ── GET /domains/{domain}/history ─────────────────────────────────────────────
+
+@router.get("/domains/{domain:path}/history", response_model=list[DomainHistoryItem])
+async def get_domain_history(
+    tenant_id: str,
+    domain: str,
+    limit: int = Query(20, ge=1, le=100),
+    ctx: AuthContext = Depends(get_auth),
+    db: AsyncSession = Depends(get_db),
+):
+    ctx.assert_own_tenant(tenant_id)
+    rows = await repo.email_intel_get_history(db, tenant_id, domain, limit)
+    return [
+        DomainHistoryItem(
+            job_id=str(r["id"]),
+            risk_score=r["risk_score"],
+            risk_band=_risk_band(r["risk_score"]),
+            findings_count=r["findings_count"] or 0,
+            created_at=r["created_at"],
+        )
+        for r in rows
+        if r["risk_score"] is not None
+    ]
+
+
+# ── GET /settings ──────────────────────────────────────────────────────────────
+
+@router.get("/settings", response_model=EmailIntelSettings)
+async def get_settings(
+    tenant_id: str,
+    ctx: AuthContext = Depends(get_auth),
+    db: AsyncSession = Depends(get_db),
+):
+    ctx.assert_own_tenant(tenant_id)
+    data = await repo.email_intel_get_settings(db, tenant_id)
+    return EmailIntelSettings(**data)
+
+
+@router.put("/settings", response_model=EmailIntelSettings)
+async def save_settings(
+    tenant_id: str,
+    body: EmailIntelSettings,
+    ctx: AuthContext = Depends(get_auth),
+    db: AsyncSession = Depends(get_db),
+):
+    ctx.assert_own_tenant(tenant_id)
+    interval = max(1, min(90, body.rescan_interval_days))
+    try:
+        await repo.email_intel_save_settings(db, tenant_id, body.auto_rescan_enabled, interval)
+    except Exception as exc:
+        exc_msg = str(exc)
+        if "email_intel_settings" in exc_msg or "does not exist" in exc_msg:
+            raise HTTPException(
+                status_code=503,
+                detail="Tabelle email_intel_settings fehlt — bitte Migration ausführen.",
+            )
+        raise HTTPException(status_code=500, detail=str(exc))
+    return EmailIntelSettings(auto_rescan_enabled=body.auto_rescan_enabled, rescan_interval_days=interval)
 
 
 # ── DELETE /domains/{domain} ───────────────────────────────────────────────────

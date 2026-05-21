@@ -1,6 +1,9 @@
 import { useState, useEffect, useRef, useCallback, useMemo } from "react";
-import { Mail, Search, RefreshCw, Trash2, ChevronDown, ChevronUp, AlertTriangle } from "lucide-react";
+import { Mail, Search, RefreshCw, Trash2, ChevronDown, ChevronUp, AlertTriangle, Settings } from "lucide-react";
 import { toast } from "sonner";
+import {
+  LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, ReferenceLine,
+} from "recharts";
 import { T, alpha } from "../theme";
 import { apiFetch } from "../api/client";
 import { useApp } from "../context/AppContext";
@@ -73,13 +76,14 @@ function FindingCard({ finding }) {
   );
 }
 
-function SummaryCard({ label, value, sub }) {
+function SummaryCard({ label, value, sub, warn }) {
+  const color = warn ? "var(--critical)" : T.text0;
   return (
     <div style={{
-      background: T.bg2, border: `1px solid ${T.border}`,
+      background: T.bg2, border: `1px solid ${warn ? "rgba(220,38,38,0.25)" : T.border}`,
       borderRadius: 8, padding: "12px 16px", flex: 1, minWidth: 100,
     }}>
-      <div style={{ fontFamily: T.font, fontSize: 20, fontWeight: 700, color: T.text0 }}>{value}</div>
+      <div style={{ fontFamily: T.font, fontSize: 20, fontWeight: 700, color }}>{value}</div>
       <div style={{ fontFamily: T.fontSans, fontSize: 10, color: T.text3, marginTop: 2 }}>{label}</div>
       {sub && <div style={{ fontFamily: T.font, fontSize: 9, color: T.text4, marginTop: 4 }}>{sub}</div>}
     </div>
@@ -116,9 +120,9 @@ function DomainRow({ item, onSelect, onDelete, isActive }) {
           {item.risk_score}
         </span>
       )}
-      {item.status === "running" || item.status === "pending" ? (
+      {(item.status === "running" || item.status === "pending") && (
         <RefreshCw size={11} color={T.text4} style={{ animation: "spin 1s linear infinite" }} />
-      ) : null}
+      )}
       <button
         onClick={e => { e.stopPropagation(); onDelete(item.domain); }}
         style={{
@@ -134,21 +138,70 @@ function DomainRow({ item, onSelect, onDelete, isActive }) {
   );
 }
 
+function ScoreHistoryChart({ history }) {
+  if (!history || history.length < 2) return null;
+  const data = [...history].reverse(); // oldest → newest
+  const fmt = (d) => new Date(d).toLocaleDateString("de-DE", { month: "short", day: "numeric" });
+  const fmtFull = (d) => new Date(d).toLocaleString("de-DE");
+  return (
+    <div style={{
+      background: T.bg1, border: `1px solid ${T.border}`,
+      borderRadius: 10, padding: "14px 20px",
+    }}>
+      <div style={{ fontFamily: T.fontSans, fontSize: 11, fontWeight: 600, color: T.text3, marginBottom: 12, textTransform: "uppercase", letterSpacing: "0.05em" }}>
+        Score-Verlauf ({history.length} Analysen)
+      </div>
+      <ResponsiveContainer width="100%" height={120}>
+        <LineChart data={data} margin={{ top: 6, right: 12, bottom: 0, left: 0 }}>
+          <XAxis
+            dataKey="created_at"
+            tickFormatter={fmt}
+            tick={{ fontFamily: T.font, fontSize: 9, fill: T.text4 }}
+            axisLine={false} tickLine={false}
+          />
+          <YAxis
+            domain={[0, 100]}
+            width={28}
+            tick={{ fontFamily: T.font, fontSize: 9, fill: T.text4 }}
+            axisLine={false} tickLine={false}
+          />
+          <Tooltip
+            formatter={(v) => [v, "Risk-Score"]}
+            labelFormatter={fmtFull}
+            contentStyle={{ background: T.bg2, border: `1px solid ${T.border}`, borderRadius: 6, fontFamily: T.fontSans, fontSize: 11 }}
+          />
+          <ReferenceLine y={75} stroke="rgba(220,38,38,0.2)" strokeDasharray="3 3" />
+          <ReferenceLine y={50} stroke="rgba(234,179,8,0.2)" strokeDasharray="3 3" />
+          <Line
+            type="monotone" dataKey="risk_score"
+            stroke={T.accent} strokeWidth={2}
+            dot={{ r: 3, fill: T.accent, strokeWidth: 0 }}
+            activeDot={{ r: 5 }}
+          />
+        </LineChart>
+      </ResponsiveContainer>
+    </div>
+  );
+}
+
 const PAGE_SIZE = 30;
 
 export default function EmailIntelPage() {
   const { tenantId } = useApp();
   const [domain, setDomain] = useState("");
   const [analyzing, setAnalyzing] = useState(false);
-  const [domains, setDomains] = useState([]);
-  const [page, setPage] = useState(0);
+  const [domains, setDomains]   = useState([]);
+  const [page, setPage]         = useState(0);
   const [activeResult, setActiveResult] = useState(null);
-  const [polling, setPolling] = useState(null);   // job_id being polled
+  const [polling, setPolling]   = useState(null);
+  const [history, setHistory]   = useState([]);
+  const [settings, setSettings] = useState({ auto_rescan_enabled: false, rescan_interval_days: 7 });
+  const [showSettings, setShowSettings] = useState(false);
+  const [savingSettings, setSavingSettings] = useState(false);
   const pollRef = useRef(null);
 
   const base = `/tenants/${tenantId}/email-intel`;
 
-  // Load domain list on mount
   const loadDomains = useCallback(async () => {
     try {
       const data = await apiFetch(`${base}/domains`);
@@ -157,7 +210,30 @@ export default function EmailIntelPage() {
     } catch { /* silent */ }
   }, [base]);
 
-  useEffect(() => { loadDomains(); }, [loadDomains]);
+  const loadHistory = useCallback(async (domainName) => {
+    try {
+      const data = await apiFetch(`${base}/domains/${encodeURIComponent(domainName)}/history`);
+      setHistory(Array.isArray(data) ? data : []);
+    } catch { setHistory([]); }
+  }, [base]);
+
+  const loadSettings = useCallback(async () => {
+    try {
+      const data = await apiFetch(`${base}/settings`);
+      setSettings(data);
+    } catch { /* silent — table may not exist yet */ }
+  }, [base]);
+
+  useEffect(() => { loadDomains(); loadSettings(); }, [loadDomains, loadSettings]);
+
+  // Load history when an active completed result changes domain
+  useEffect(() => {
+    if (activeResult?.status === "complete" && activeResult.domain) {
+      loadHistory(activeResult.domain);
+    } else {
+      setHistory([]);
+    }
+  }, [activeResult?.domain, activeResult?.status, loadHistory]);
 
   // Poll for job completion
   useEffect(() => {
@@ -225,6 +301,19 @@ export default function EmailIntelPage() {
     }
   };
 
+  const handleSaveSettings = async () => {
+    setSavingSettings(true);
+    try {
+      await apiFetch(`${base}/settings`, { method: "PUT", body: settings });
+      toast.success("Re-Scan-Einstellungen gespeichert");
+    } catch (e) {
+      toast.error("Speichern fehlgeschlagen", { description: e.message });
+    } finally {
+      setSavingSettings(false);
+    }
+  };
+
+  const gs = activeResult?.graph_summary;
   const isRunning = activeResult?.status === "running" || activeResult?.status === "pending";
   const totalPages = Math.ceil(domains.length / PAGE_SIZE);
   const pagedDomains = useMemo(
@@ -234,7 +323,7 @@ export default function EmailIntelPage() {
 
   return (
     <div style={{ display: "flex", gap: 20, height: "calc(100vh - 80px)", overflow: "hidden" }}>
-      {/* ── Left sidebar: domain list ────────────────────────────────────── */}
+      {/* ── Left sidebar ─────────────────────────────────────────────────── */}
       <aside style={{
         width: 240, flexShrink: 0, display: "flex", flexDirection: "column",
         background: T.bg1, border: `1px solid ${T.border}`, borderRadius: 10, overflow: "hidden",
@@ -250,8 +339,7 @@ export default function EmailIntelPage() {
               style={{
                 flex: 1, background: T.bg3, border: `1px solid ${T.border}`,
                 borderRadius: 5, padding: "6px 8px",
-                fontFamily: T.font, fontSize: 11, color: T.text1,
-                outline: "none",
+                fontFamily: T.font, fontSize: 11, color: T.text1, outline: "none",
               }}
             />
             <button
@@ -260,8 +348,7 @@ export default function EmailIntelPage() {
               style={{
                 background: T.accent, border: "none", borderRadius: 5,
                 padding: "6px 10px", cursor: analyzing ? "not-allowed" : "pointer",
-                opacity: analyzing ? 0.6 : 1,
-                display: "flex", alignItems: "center",
+                opacity: analyzing ? 0.6 : 1, display: "flex", alignItems: "center",
               }}
             >
               {analyzing
@@ -290,7 +377,7 @@ export default function EmailIntelPage() {
           ))}
         </div>
 
-        {/* Pagination controls */}
+        {/* Pagination */}
         {totalPages > 1 && (
           <div style={{
             display: "flex", alignItems: "center", justifyContent: "space-between",
@@ -298,25 +385,82 @@ export default function EmailIntelPage() {
             fontFamily: T.fontSans, fontSize: 10, color: T.text4, flexShrink: 0,
           }}>
             <button
-              onClick={() => setPage(p => Math.max(0, p - 1))}
-              disabled={page === 0}
-              style={{
-                background: "none", border: "none", cursor: page === 0 ? "default" : "pointer",
-                color: page === 0 ? T.text4 : T.text2, padding: "2px 6px",
-              }}
+              onClick={() => setPage(p => Math.max(0, p - 1))} disabled={page === 0}
+              style={{ background: "none", border: "none", cursor: page === 0 ? "default" : "pointer", color: page === 0 ? T.text4 : T.text2, padding: "2px 6px" }}
             >‹</button>
             <span>{page + 1} / {totalPages}</span>
             <button
-              onClick={() => setPage(p => Math.min(totalPages - 1, p + 1))}
-              disabled={page >= totalPages - 1}
-              style={{
-                background: "none", border: "none",
-                cursor: page >= totalPages - 1 ? "default" : "pointer",
-                color: page >= totalPages - 1 ? T.text4 : T.text2, padding: "2px 6px",
-              }}
+              onClick={() => setPage(p => Math.min(totalPages - 1, p + 1))} disabled={page >= totalPages - 1}
+              style={{ background: "none", border: "none", cursor: page >= totalPages - 1 ? "default" : "pointer", color: page >= totalPages - 1 ? T.text4 : T.text2, padding: "2px 6px" }}
             >›</button>
           </div>
         )}
+
+        {/* Auto Re-Scan Settings */}
+        <div style={{ borderTop: `1px solid ${T.border}`, flexShrink: 0 }}>
+          <button
+            onClick={() => setShowSettings(s => !s)}
+            style={{
+              display: "flex", alignItems: "center", gap: 7, width: "100%",
+              padding: "8px 12px", background: "transparent", border: "none",
+              cursor: "pointer", color: T.text3,
+            }}
+          >
+            <Settings size={11} />
+            <span style={{ fontFamily: T.fontSans, fontSize: 10, flex: 1, textAlign: "left" }}>
+              Auto Re-Scan
+            </span>
+            {settings.auto_rescan_enabled && (
+              <span style={{
+                fontFamily: T.font, fontSize: 8, color: T.accent,
+                background: alpha(T.accent, 12), border: `1px solid ${alpha(T.accent, 25)}`,
+                padding: "1px 5px", borderRadius: 3,
+              }}>AN</span>
+            )}
+            {showSettings ? <ChevronUp size={11} /> : <ChevronDown size={11} />}
+          </button>
+
+          {showSettings && (
+            <div style={{ padding: "0 12px 12px", display: "flex", flexDirection: "column", gap: 8 }}>
+              <label style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer" }}>
+                <input
+                  type="checkbox"
+                  checked={settings.auto_rescan_enabled}
+                  onChange={e => setSettings(s => ({ ...s, auto_rescan_enabled: e.target.checked }))}
+                  style={{ accentColor: T.accent }}
+                />
+                <span style={{ fontFamily: T.fontSans, fontSize: 11, color: T.text2 }}>
+                  Automatisch wiederholen
+                </span>
+              </label>
+              <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                <span style={{ fontFamily: T.fontSans, fontSize: 10, color: T.text4, flex: 1 }}>Intervall (Tage)</span>
+                <input
+                  type="number" min={1} max={90}
+                  value={settings.rescan_interval_days}
+                  onChange={e => setSettings(s => ({ ...s, rescan_interval_days: Math.max(1, Math.min(90, parseInt(e.target.value) || 7)) }))}
+                  style={{
+                    width: 52, background: T.bg3, border: `1px solid ${T.border}`,
+                    borderRadius: 4, padding: "3px 6px",
+                    fontFamily: T.font, fontSize: 11, color: T.text1,
+                    textAlign: "right",
+                  }}
+                />
+              </div>
+              <button
+                onClick={handleSaveSettings} disabled={savingSettings}
+                style={{
+                  background: T.accent, border: "none", borderRadius: 5,
+                  padding: "5px 10px", cursor: savingSettings ? "not-allowed" : "pointer",
+                  opacity: savingSettings ? 0.6 : 1,
+                  fontFamily: T.fontSans, fontSize: 10, color: "var(--background)",
+                }}
+              >
+                {savingSettings ? "Speichert…" : "Speichern"}
+              </button>
+            </div>
+          )}
+        </div>
       </aside>
 
       {/* ── Main content ──────────────────────────────────────────────────── */}
@@ -331,14 +475,14 @@ export default function EmailIntelPage() {
               E-Mail Infrastruktur Analyse
             </div>
             <div style={{ fontFamily: T.fontSans, fontSize: 11, color: T.text4, maxWidth: 400, textAlign: "center" }}>
-              SPF · DMARC · MX · Provider-Erkennung · ASN-Mapping · Risikobewertung
+              SPF · DMARC · MX · DKIM · RBL · MTA-STS · Provider-Erkennung · ASN-Mapping
             </div>
           </div>
         )}
 
         {activeResult && (
           <>
-            {/* Header: domain + status */}
+            {/* Header */}
             <div style={{
               display: "flex", alignItems: "center", gap: 14, flexWrap: "wrap",
               background: T.bg1, border: `1px solid ${T.border}`,
@@ -383,26 +527,40 @@ export default function EmailIntelPage() {
                   <EmailRiskBadge score={activeResult.risk_score} band={activeResult.risk_band} />
                 </div>
               )}
-
-              {activeResult.status === "failed" && (
-                <div style={{ display: "flex", alignItems: "center", gap: 6, color: "var(--critical)", marginLeft: "auto" }}>
-                  <AlertTriangle size={14} />
-                  <span style={{ fontFamily: T.fontSans, fontSize: 11 }}>{activeResult.error}</span>
-                </div>
-              )}
             </div>
 
             {/* Summary cards */}
-            {activeResult.graph_summary && (
+            {gs && (
               <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
-                <SummaryCard label="SPF-Tiefe" value={activeResult.graph_summary.spf_depth} sub="include-Ebenen" />
-                <SummaryCard label="DNS-Lookups" value={`${activeResult.graph_summary.spf_lookup_count}/10`} sub="RFC 7208 Limit" />
-                <SummaryCard label="Externe Provider" value={activeResult.graph_summary.provider_count} />
-                <SummaryCard label="MX-Server" value={activeResult.graph_summary.mx_count} />
-                <SummaryCard label="IPs" value={activeResult.graph_summary.ip_count} />
-                <SummaryCard label="ASNs" value={activeResult.graph_summary.asn_count} />
+                <SummaryCard label="SPF-Tiefe" value={gs.spf_depth} sub="include-Ebenen" />
+                <SummaryCard label="DNS-Lookups" value={`${gs.spf_lookup_count}/10`} sub="RFC 7208" warn={gs.spf_lookup_count > 10} />
+                <SummaryCard label="Provider" value={gs.provider_count} />
+                <SummaryCard label="MX-Server" value={gs.mx_count} />
+                <SummaryCard label="IPs" value={gs.ip_count} />
+                <SummaryCard label="ASNs" value={gs.asn_count} />
+                <SummaryCard
+                  label="DKIM"
+                  value={gs.dkim_selectors_found > 0 ? `${gs.dkim_selectors_found} Sel.` : "—"}
+                  sub={gs.dkim_weak_keys > 0 ? `${gs.dkim_weak_keys} schwach` : gs.dkim_selectors_found > 0 ? "OK" : "nicht gefunden"}
+                  warn={gs.dkim_weak_keys > 0}
+                />
+                <SummaryCard
+                  label="RBL"
+                  value={gs.rbl_listed_count > 0 ? gs.rbl_listed_count : "✓"}
+                  sub={gs.rbl_listed_count > 0 ? "gelistet" : "sauber"}
+                  warn={gs.rbl_listed_count > 0}
+                />
+                <SummaryCard
+                  label="MTA-STS"
+                  value={gs.mta_sts_mode ?? "—"}
+                  sub={gs.tls_rpt_present ? "TLS-RPT ✓" : "kein TLS-RPT"}
+                  warn={!gs.mta_sts_mode}
+                />
               </div>
             )}
+
+            {/* Score history chart */}
+            <ScoreHistoryChart history={history} />
 
             {/* SPF + DMARC raw */}
             {(activeResult.spf_raw || activeResult.dmarc_raw) && (
@@ -454,7 +612,7 @@ export default function EmailIntelPage() {
                 <div style={{ fontFamily: T.fontSans, fontSize: 11, fontWeight: 600, color: T.text3, marginBottom: 10, textTransform: "uppercase", letterSpacing: "0.05em" }}>
                   Findings ({activeResult.findings.length})
                 </div>
-                {activeResult.findings
+                {[...activeResult.findings]
                   .sort((a, b) => {
                     const order = ["CRITICAL", "HIGH", "MEDIUM", "LOW", "INFO"];
                     return order.indexOf(a.severity) - order.indexOf(b.severity);
@@ -464,7 +622,7 @@ export default function EmailIntelPage() {
               </div>
             )}
 
-            {/* Provider table */}
+            {/* MX table */}
             {activeResult.mx_records?.length > 0 && (
               <div style={{
                 background: T.bg1, border: `1px solid ${T.border}`,
