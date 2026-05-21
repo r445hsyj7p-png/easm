@@ -155,7 +155,7 @@ def _write_analysis(tx, domain, tenant_id, spf_raw, dmarc_policy_str, spf_tree, 
             tx.run("""
                 UNWIND $edges AS e
                 MATCH (p1:Provider {name: e.parent}), (p2:Provider {name: e.child})
-                MERGE (p1)-[:SPF_INCLUDES {depth: e.depth}]->(p2)
+                MERGE (p1)-[:SPF_INCLUDES {depth: e.depth, mechanism: e.mech}]->(p2)
             """, edges=spf_data["prov_to_prov"])
 
 
@@ -180,7 +180,8 @@ def _collect_spf_data(node, root_domain: str, parent_name: str | None, result: d
             })
         else:
             result["prov_to_prov"].append({
-                "parent": parent_name, "child": child.domain, "depth": child.depth,
+                "parent": parent_name, "child": child.domain,
+                "depth": child.depth, "mech": mech_type,
             })
         _collect_spf_data(child, root_domain, child.domain, result)
 

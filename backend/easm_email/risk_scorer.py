@@ -97,11 +97,11 @@ def score(
             ))
 
         lc = spf_tree.lookup_count
-        if lc >= _RFC_LOOKUP_LIMIT:
+        if lc > _RFC_LOOKUP_LIMIT:
             points += 15
             findings.append(EmailFinding(
                 code="SPF_LOOKUP_LIMIT", severity="HIGH",
-                title=f"SPF-DNS-Lookups am RFC-Limit ({lc}/10)",
+                title=f"SPF-DNS-Lookups überschreiten RFC-Limit ({lc}/10)",
                 detail="RFC 7208 erlaubt maximal 10 DNS-Lookups. Bei Überschreitung liefern empfangende Server ein PermError.",
                 remediation="Reduzieren Sie includes oder nutzen Sie einen SPF-Flattening-Dienst.",
             ))

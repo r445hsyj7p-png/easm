@@ -134,5 +134,14 @@ def enrich_ip_list(ips: list[tuple[str, int, str | None]]) -> list[EnrichedIP]:
             for i, (addr, ver, ptr) in enumerate(unique)
         }
         for fut in as_completed(futures):
-            results[futures[fut]] = fut.result()
+            idx = futures[fut]
+            try:
+                results[idx] = fut.result()
+            except Exception as e:
+                addr, ver, ptr = unique[idx]
+                log.warning("[enricher] enrichment failed for %s: %s", addr, e)
+                results[idx] = EnrichedIP(
+                    address=addr, version=ver, ptr=ptr,
+                    asn=None, provider_name="Unknown", provider_category="unknown",
+                )
     return results

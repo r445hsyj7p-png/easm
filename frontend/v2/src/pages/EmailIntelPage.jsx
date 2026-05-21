@@ -5,7 +5,6 @@ import { T, alpha } from "../theme";
 import { apiFetch } from "../api/client";
 import { useApp } from "../context/AppContext";
 import { EmailRiskBadge, BAND_COLORS } from "../components/email/EmailRiskBadge";
-import { ProviderTable } from "../components/email/ProviderTable";
 import { EmailGraph } from "../components/email/EmailGraph";
 
 const SEVERITY_COLORS = {
@@ -164,9 +163,11 @@ export default function EmailIntelPage() {
   useEffect(() => {
     if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null; }
     if (!polling) return;
+    let mounted = true;
     pollRef.current = setInterval(async () => {
       try {
         const result = await apiFetch(`${base}/result/${polling}`);
+        if (!mounted) return;
         const done = result.status === "complete" || result.status === "failed";
         setActiveResult(prev => {
           if (!done && prev?.status === result.status) return prev;
@@ -186,7 +187,7 @@ export default function EmailIntelPage() {
         }
       } catch { /* silent */ }
     }, 2500);
-    return () => { clearInterval(pollRef.current); pollRef.current = null; };
+    return () => { mounted = false; clearInterval(pollRef.current); pollRef.current = null; };
   }, [polling, base, loadDomains]);
 
   const handleAnalyze = async () => {
@@ -229,10 +230,6 @@ export default function EmailIntelPage() {
   const pagedDomains = useMemo(
     () => domains.slice(page * PAGE_SIZE, (page + 1) * PAGE_SIZE),
     [domains, page],
-  );
-  const enrichedIps = useMemo(
-    () => activeResult?.mx_records?.flatMap(mx => mx.ips || []) ?? [],
-    [activeResult?.mx_records],
   );
 
   return (
