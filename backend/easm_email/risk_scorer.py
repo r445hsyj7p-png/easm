@@ -11,15 +11,7 @@ from .spf_parser import SpfNode, collect_all_includes, max_depth, count_includes
 from .dmarc_parser import DmarcPolicy
 from .enricher import EnrichedIP
 from .mx_analyzer import MxServerInfo
-
-
-@dataclass
-class EmailFinding:
-    code: str
-    severity: str   # CRITICAL | HIGH | MEDIUM | LOW | INFO
-    title: str
-    detail: str
-    remediation: str
+from .models import EmailFinding
 
 
 @dataclass
