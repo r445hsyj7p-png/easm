@@ -281,19 +281,26 @@ services:
     image: neo4j:5.16-community
     restart: unless-stopped
     environment:
+      # NEO4J_AUTH: username/password (required by Neo4j docker image)
       NEO4J_AUTH: neo4j/${NEO4J_PASSWORD:-changeme_neo4j}
-      NEO4J_server_memory_heap_initial__size: 512m
-      NEO4J_server_memory_heap_max__size: 1G
-      NEO4J_server_memory_pagecache__size: 256m
+      # Neo4j 5.x env-var convention: each dot → underscore, underscore → double-underscore
+      # server.memory.heap.initial_size → NEO4J_server_memory_heap_initial__size
+      NEO4J_server_memory_heap_initial__size: "256m"
+      NEO4J_server_memory_heap_max__size: "512m"
+      # server.memory.pagecache.size → NEO4J_server_memory_pagecache_size
+      NEO4J_server_memory_pagecache_size: "128m"
     volumes:
       - neo4j_data:/data
       - neo4j_logs:/logs
+    # neo4j status checks the process; cypher-shell verifies the DB is accepting queries.
+    # Use neo4j status as the health probe — it's always present in the image and
+    # returns non-zero only when the daemon is not running.
     healthcheck:
-      test: ["CMD-SHELL", "wget -qO- http://localhost:7474 || exit 1"]
-      interval: 30s
+      test: ["CMD-SHELL", "neo4j status"]
+      interval: 15s
       timeout: 10s
-      start_period: 60s
-      retries: 5
+      start_period: 120s
+      retries: 8
     networks:
       - easm
     logging:
@@ -322,8 +329,12 @@ services:
         condition: service_healthy
       postgres:
         condition: service_healthy
+      # service_started (not service_healthy): Neo4j connectivity is handled
+      # gracefully in the @worker_ready signal — schema init is non-fatal and
+      # graph writes in each task are wrapped in try/except. The worker must
+      # not block the entire deployment on Neo4j readiness.
       neo4j:
-        condition: service_healthy
+        condition: service_started
     networks:
       - easm
     logging:
