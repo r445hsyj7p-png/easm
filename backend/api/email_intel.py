@@ -50,10 +50,27 @@ async def analyze(
     ctx.assert_own_tenant(tenant_id)
 
     job_id = str(uuid.uuid4())
-    await repo.email_intel_create_job(db, job_id, tenant_id, body.domain)
+    try:
+        await repo.email_intel_create_job(db, job_id, tenant_id, body.domain)
+    except Exception as exc:
+        exc_name = type(exc).__name__
+        exc_msg  = str(exc)
+        if "email_intel_jobs" in exc_msg or "UndefinedTable" in exc_name or "does not exist" in exc_msg:
+            raise HTTPException(
+                status_code=503,
+                detail="Tabelle email_intel_jobs fehlt — bitte 'alembic upgrade head' ausführen "
+                       "oder Container neu bauen (CACHEBUST aktualisieren).",
+            )
+        raise HTTPException(status_code=503, detail=f"Datenbankfehler: {exc_name}: {exc_msg}")
 
-    from workers.email_intel_tasks import email_intel_analyze
-    email_intel_analyze.delay(job_id, body.domain, tenant_id)
+    try:
+        from workers.email_intel_tasks import email_intel_analyze
+        email_intel_analyze.delay(job_id, body.domain, tenant_id)
+    except Exception as exc:
+        raise HTTPException(
+            status_code=503,
+            detail=f"Celery-Worker nicht erreichbar (worker-email-intel läuft?): {exc}",
+        )
 
     return AnalyzeResponse(job_id=job_id, status=JobStatus.PENDING)
 

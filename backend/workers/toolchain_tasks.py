@@ -318,9 +318,13 @@ def run_full_pipeline(self, tenant_id: str, config_dict: dict, request_id: str =
         elif phase == "discovery":
             sub_count = len(report.subdomains_discovered)
             _diag_log("subfinder", f"{sub_count} Subdomains/Domains gefunden")
-            email_count = len([f for f in report.findings_theharvester if f.category == "email"])
-            if email_count:
-                _diag_log("theharvester", f"{email_count} E-Mail-Adressen via OSINT gesammelt")
+            email_addrs: set[str] = set()
+            for f in report.findings_theharvester:
+                if f.category == "email":
+                    email_addrs.update(f.raw_data.get("emails", []))
+                    email_addrs.update(f.raw_data.get("other_emails", []))
+            if email_addrs:
+                _diag_log("theharvester", f"{len(email_addrs)} E-Mail-Adressen via OSINT gesammelt")
         elif phase == "portscan":
             open_ports = report.open_ports or {}
             port_count = sum(len(v) for v in open_ports.values())

@@ -364,6 +364,20 @@ export default function EmailIntelPage() {
                 </div>
               )}
 
+              {activeResult.status === "failed" && activeResult.error && (
+                <div style={{
+                  display: "flex", alignItems: "flex-start", gap: 8, marginLeft: "auto",
+                  background: "rgba(var(--critical-rgb,220,38,38),0.08)",
+                  border: "1px solid rgba(var(--critical-rgb,220,38,38),0.25)",
+                  borderRadius: 6, padding: "8px 12px", maxWidth: 420,
+                }}>
+                  <AlertTriangle size={13} color="var(--critical)" style={{ flexShrink: 0, marginTop: 1 }} />
+                  <span style={{ fontFamily: T.fontSans, fontSize: 11, color: T.text1, wordBreak: "break-word" }}>
+                    {activeResult.error}
+                  </span>
+                </div>
+              )}
+
               {activeResult.status === "complete" && activeResult.risk_score != null && (
                 <div style={{ marginLeft: "auto" }}>
                   <EmailRiskBadge score={activeResult.risk_score} band={activeResult.risk_band} />
