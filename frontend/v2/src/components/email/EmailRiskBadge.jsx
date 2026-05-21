@@ -1,6 +1,6 @@
 import { T, alpha } from "../../theme";
 
-const BAND_COLORS = {
+export const BAND_COLORS = {
   Critical: { fg: "var(--critical)", bg: alpha("var(--critical)", 12), border: alpha("var(--critical)", 25) },
   High:     { fg: "var(--high)",     bg: alpha("var(--high)", 12),     border: alpha("var(--high)", 25)     },
   Medium:   { fg: "var(--medium)",   bg: alpha("var(--medium)", 12),   border: alpha("var(--medium)", 25)   },

@@ -159,8 +159,6 @@ def email_intel_analyze(self, job_id: str, domain: str, tenant_id: str):
             "asn_count": result.asn_count,
             "mx_count": result.mx_count,
         })
-        # Build lookup so provider/ASN info is stored in mx_records JSONB.
-        # The frontend uses this to show provider classification without a Neo4j query.
         enriched_by_addr = {e.address: e for e in enriched_ips}
 
         def _ip_dict(ip) -> dict:

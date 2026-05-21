@@ -18,18 +18,22 @@ from easm_email.models import (
     AnalyzeRequest, AnalyzeResponse, ResultResponse,
     EmailFinding, GraphSummary, DomainListItem,
 )
+from easm_email.risk_scorer import risk_band as _risk_band
+
+
+def _parse_jsonb(value, expect_list: bool):
+    """Deserialise a JSONB column that asyncpg may return as already-parsed or as a JSON string."""
+    if value is None:
+        return [] if expect_list else None
+    if isinstance(value, (list, dict)):
+        return value
+    return json.loads(value)
+
 
 router = APIRouter(
     prefix="/api/v1/tenants/{tenant_id}/email-intel",
     tags=["Email Intelligence"],
 )
-
-
-def _risk_band(score: int) -> str:
-    if score <= 25: return "Low"
-    if score <= 50: return "Medium"
-    if score <= 75: return "High"
-    return "Critical"
 
 
 # ── POST /analyze ──────────────────────────────────────────────────────────────
@@ -82,19 +86,10 @@ async def get_result(
     if not row:
         raise HTTPException(status_code=404, detail="Job nicht gefunden.")
 
-    findings: list[EmailFinding] = []
-    if row["findings"]:
-        raw = row["findings"] if isinstance(row["findings"], list) else json.loads(row["findings"])
-        findings = [EmailFinding(**f) for f in raw]
-
-    summary: GraphSummary | None = None
-    if row["graph_summary"]:
-        raw = row["graph_summary"] if isinstance(row["graph_summary"], dict) else json.loads(row["graph_summary"])
-        summary = GraphSummary(**raw)
-
-    mx_records: list[dict] = []
-    if row["mx_records"]:
-        mx_records = row["mx_records"] if isinstance(row["mx_records"], list) else json.loads(row["mx_records"])
+    findings = [EmailFinding(**f) for f in (_parse_jsonb(row["findings"], expect_list=True) or [])]
+    raw_summary = _parse_jsonb(row["graph_summary"], expect_list=False)
+    summary: GraphSummary | None = GraphSummary(**raw_summary) if raw_summary else None
+    mx_records: list[dict] = _parse_jsonb(row["mx_records"], expect_list=True) or []
 
     # Fetch Neo4j graph when analysis is complete (non-fatal)
     graph_json: dict | None = None

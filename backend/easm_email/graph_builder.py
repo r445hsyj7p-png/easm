@@ -224,7 +224,6 @@ def _read_graph(tx, domain: str, tenant_id: str) -> dict:
     for rec in tx.run("""
         MATCH (d:Domain {fqdn: $fqdn, tenant_id: $tid})-[*1..12]->(i:IP)-[:BELONGS_TO]->(a:ASN)
         RETURN DISTINCT i.address AS ip_addr, a.number AS num, a.name AS name, a.country AS country
-        LIMIT 40
     """, fqdn=domain, tid=tenant_id):
         ip_id = f"ip:{rec['ip_addr']}"
         asn_id = f"asn:{rec['num']}"

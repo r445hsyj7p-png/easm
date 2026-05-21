@@ -1,10 +1,10 @@
-import { useState, useEffect, useRef, useCallback } from "react";
+import { useState, useEffect, useRef, useCallback, useMemo } from "react";
 import { Mail, Search, RefreshCw, Trash2, ChevronDown, ChevronUp, AlertTriangle } from "lucide-react";
 import { toast } from "sonner";
 import { T, alpha } from "../theme";
 import { apiFetch } from "../api/client";
 import { useApp } from "../context/AppContext";
-import { EmailRiskBadge } from "../components/email/EmailRiskBadge";
+import { EmailRiskBadge, BAND_COLORS } from "../components/email/EmailRiskBadge";
 import { ProviderTable } from "../components/email/ProviderTable";
 import { EmailGraph } from "../components/email/EmailGraph";
 
@@ -88,7 +88,7 @@ function SummaryCard({ label, value, sub }) {
 }
 
 function DomainRow({ item, onSelect, onDelete, isActive }) {
-  const color = { Low: T.accent, Medium: "var(--medium)", High: "var(--high)", Critical: "var(--critical)" }[item.risk_band] ?? T.text4;
+  const color = (BAND_COLORS[item.risk_band] ?? { fg: T.text4 }).fg;
   return (
     <div
       onClick={() => onSelect(item)}
@@ -158,17 +158,19 @@ export default function EmailIntelPage() {
 
   // Poll for job completion
   useEffect(() => {
-    if (!polling) {
-      if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null; }
-      return;
-    }
+    if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null; }
+    if (!polling) return;
     pollRef.current = setInterval(async () => {
       try {
         const result = await apiFetch(`${base}/result/${polling}`);
-        if (result.status === "complete" || result.status === "failed") {
+        const done = result.status === "complete" || result.status === "failed";
+        setActiveResult(prev => {
+          if (!done && prev?.status === result.status) return prev;
+          return result;
+        });
+        if (done) {
           setPolling(null);
           setAnalyzing(false);
-          setActiveResult(result);
           loadDomains();
           if (result.status === "complete") {
             toast.success(`Analyse abgeschlossen: ${result.domain}`, {
@@ -177,12 +179,10 @@ export default function EmailIntelPage() {
           } else {
             toast.error("Analyse fehlgeschlagen", { description: result.error });
           }
-        } else {
-          setActiveResult(result);  // show partial progress
         }
       } catch { /* silent */ }
     }, 2500);
-    return () => clearInterval(pollRef.current);
+    return () => { clearInterval(pollRef.current); pollRef.current = null; };
   }, [polling, base, loadDomains]);
 
   const handleAnalyze = async () => {
@@ -221,10 +221,10 @@ export default function EmailIntelPage() {
   };
 
   const isRunning = activeResult?.status === "running" || activeResult?.status === "pending";
-  // IPs now carry provider_name/provider_category from the backend JSONB
-  const enrichedIps = activeResult?.mx_records
-    ?.flatMap(mx => mx.ips || [])
-    ?? [];
+  const enrichedIps = useMemo(
+    () => activeResult?.mx_records?.flatMap(mx => mx.ips || []) ?? [],
+    [activeResult?.mx_records],
+  );
 
   return (
     <div style={{ display: "flex", gap: 20, height: "calc(100vh - 80px)", overflow: "hidden" }}>

@@ -36,7 +36,7 @@ class ScoreResult:
     mx_count: int = 0
 
 
-def _band(score: int) -> str:
+def risk_band(score: int) -> str:
     if score <= 25:  return "Low"
     if score <= 50:  return "Medium"
     if score <= 75:  return "High"
@@ -227,7 +227,7 @@ def score(
 
     return ScoreResult(
         score=min(100, points),
-        band=_band(min(100, points)),
+        band=risk_band(min(100, points)),
         findings=findings,
         spf_depth=max_depth(spf_tree) if spf_tree else 0,
         spf_include_count=count_includes(spf_tree) if spf_tree else 0,
