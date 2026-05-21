@@ -135,11 +135,14 @@ function DomainRow({ item, onSelect, onDelete, isActive }) {
   );
 }
 
+const PAGE_SIZE = 30;
+
 export default function EmailIntelPage() {
   const { tenantId } = useApp();
   const [domain, setDomain] = useState("");
   const [analyzing, setAnalyzing] = useState(false);
   const [domains, setDomains] = useState([]);
+  const [page, setPage] = useState(0);
   const [activeResult, setActiveResult] = useState(null);
   const [polling, setPolling] = useState(null);   // job_id being polled
   const pollRef = useRef(null);
@@ -151,6 +154,7 @@ export default function EmailIntelPage() {
     try {
       const data = await apiFetch(`${base}/domains`);
       setDomains(Array.isArray(data) ? data : []);
+      setPage(0);
     } catch { /* silent */ }
   }, [base]);
 
@@ -221,6 +225,11 @@ export default function EmailIntelPage() {
   };
 
   const isRunning = activeResult?.status === "running" || activeResult?.status === "pending";
+  const totalPages = Math.ceil(domains.length / PAGE_SIZE);
+  const pagedDomains = useMemo(
+    () => domains.slice(page * PAGE_SIZE, (page + 1) * PAGE_SIZE),
+    [domains, page],
+  );
   const enrichedIps = useMemo(
     () => activeResult?.mx_records?.flatMap(mx => mx.ips || []) ?? [],
     [activeResult?.mx_records],
@@ -273,7 +282,7 @@ export default function EmailIntelPage() {
               Noch keine Analysen.<br />Domain eingeben und Enter.
             </div>
           )}
-          {domains.map(item => (
+          {pagedDomains.map(item => (
             <DomainRow
               key={item.job_id}
               item={item}
@@ -283,6 +292,34 @@ export default function EmailIntelPage() {
             />
           ))}
         </div>
+
+        {/* Pagination controls */}
+        {totalPages > 1 && (
+          <div style={{
+            display: "flex", alignItems: "center", justifyContent: "space-between",
+            padding: "6px 10px", borderTop: `1px solid ${T.border}`,
+            fontFamily: T.fontSans, fontSize: 10, color: T.text4, flexShrink: 0,
+          }}>
+            <button
+              onClick={() => setPage(p => Math.max(0, p - 1))}
+              disabled={page === 0}
+              style={{
+                background: "none", border: "none", cursor: page === 0 ? "default" : "pointer",
+                color: page === 0 ? T.text4 : T.text2, padding: "2px 6px",
+              }}
+            >‹</button>
+            <span>{page + 1} / {totalPages}</span>
+            <button
+              onClick={() => setPage(p => Math.min(totalPages - 1, p + 1))}
+              disabled={page >= totalPages - 1}
+              style={{
+                background: "none", border: "none",
+                cursor: page >= totalPages - 1 ? "default" : "pointer",
+                color: page >= totalPages - 1 ? T.text4 : T.text2, padding: "2px 6px",
+              }}
+            >›</button>
+          </div>
+        )}
       </aside>
 
       {/* ── Main content ──────────────────────────────────────────────────── */}

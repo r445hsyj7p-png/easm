@@ -6,14 +6,14 @@ from __future__ import annotations
 import asyncio
 import json
 import uuid
-from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
-from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from api.main import get_auth, AuthContext, limiter
 from db.database import get_db
+from db import repo
+from easm_email.job_status import JobStatus
 from easm_email.models import (
     AnalyzeRequest, AnalyzeResponse, ResultResponse,
     EmailFinding, GraphSummary, DomainListItem,
@@ -22,7 +22,7 @@ from easm_email.risk_scorer import risk_band as _risk_band
 
 
 def _parse_jsonb(value, expect_list: bool):
-    """Deserialise a JSONB column that asyncpg may return as already-parsed or as a JSON string."""
+    """Deserialise a JSONB column that asyncpg may return already-parsed or as a JSON string."""
     if value is None:
         return [] if expect_list else None
     if isinstance(value, (list, dict)):
@@ -50,18 +50,12 @@ async def analyze(
     ctx.assert_own_tenant(tenant_id)
 
     job_id = str(uuid.uuid4())
-    await db.execute(text("""
-        INSERT INTO email_intel_jobs (id, tenant_id, domain, status, created_at)
-        VALUES (:id, :tid, :domain, 'pending', :now)
-    """), {"id": job_id, "tid": tenant_id, "domain": body.domain,
-           "now": datetime.now(timezone.utc)})
-    await db.commit()
+    await repo.email_intel_create_job(db, job_id, tenant_id, body.domain)
 
-    # Dispatch to dedicated email-intel Celery worker
     from workers.email_intel_tasks import email_intel_analyze
     email_intel_analyze.delay(job_id, body.domain, tenant_id)
 
-    return AnalyzeResponse(job_id=job_id, status="pending")
+    return AnalyzeResponse(job_id=job_id, status=JobStatus.PENDING)
 
 
 # ── GET /result/{job_id} ───────────────────────────────────────────────────────
@@ -75,14 +69,7 @@ async def get_result(
 ):
     ctx.assert_own_tenant(tenant_id)
 
-    row = (await db.execute(text("""
-        SELECT id, tenant_id, domain, status, risk_score,
-               spf_raw, dmarc_raw, mx_records, findings, graph_summary,
-               error, created_at, completed_at
-        FROM email_intel_jobs
-        WHERE id = :id AND tenant_id = :tid
-    """), {"id": job_id, "tid": tenant_id})).mappings().first()
-
+    row = await repo.email_intel_get_job(db, job_id, tenant_id)
     if not row:
         raise HTTPException(status_code=404, detail="Job nicht gefunden.")
 
@@ -91,9 +78,8 @@ async def get_result(
     summary: GraphSummary | None = GraphSummary(**raw_summary) if raw_summary else None
     mx_records: list[dict] = _parse_jsonb(row["mx_records"], expect_list=True) or []
 
-    # Fetch Neo4j graph when analysis is complete (non-fatal)
     graph_json: dict | None = None
-    if row["status"] == "complete":
+    if row["status"] == JobStatus.COMPLETE:
         try:
             from easm_email.graph_builder import get_graph_json
             graph_json = await asyncio.to_thread(get_graph_json, row["domain"], tenant_id)
@@ -130,20 +116,12 @@ async def get_graph(
 ):
     ctx.assert_own_tenant(tenant_id)
 
-    # Verify domain belongs to this tenant
-    exists = (await db.execute(text("""
-        SELECT 1 FROM email_intel_jobs
-        WHERE tenant_id = :tid AND domain = :domain AND status = 'complete'
-        LIMIT 1
-    """), {"tid": tenant_id, "domain": domain})).first()
-
-    if not exists:
+    if not await repo.email_intel_has_complete_job(db, tenant_id, domain):
         raise HTTPException(status_code=404, detail="Keine abgeschlossene Analyse für diese Domain.")
 
     try:
         from easm_email.graph_builder import get_graph_json
-        graph = await asyncio.to_thread(get_graph_json, domain, tenant_id)
-        return graph
+        return await asyncio.to_thread(get_graph_json, domain, tenant_id)
     except Exception as e:
         raise HTTPException(status_code=503, detail=f"Graph-Datenbank nicht erreichbar: {e}")
 
@@ -159,19 +137,7 @@ async def list_domains(
 ):
     ctx.assert_own_tenant(tenant_id)
 
-    # Prefer complete > failed > running/pending for each domain so the list
-    # shows the last successful result even while a re-analysis is in progress.
-    rows = (await db.execute(text("""
-        SELECT DISTINCT ON (domain)
-            id, domain, status, risk_score, created_at, completed_at
-        FROM email_intel_jobs
-        WHERE tenant_id = :tid
-        ORDER BY domain,
-                 CASE status WHEN 'complete' THEN 0 WHEN 'failed' THEN 1 ELSE 2 END,
-                 created_at DESC
-        LIMIT :limit
-    """), {"tid": tenant_id, "limit": limit})).mappings().all()
-
+    rows = await repo.email_intel_list_domains(db, tenant_id, limit)
     return [
         DomainListItem(
             job_id=str(r["id"]),
@@ -197,12 +163,8 @@ async def delete_domain(
 ):
     ctx.assert_own_tenant(tenant_id)
 
-    await db.execute(text("""
-        DELETE FROM email_intel_jobs WHERE tenant_id = :tid AND domain = :domain
-    """), {"tid": tenant_id, "domain": domain})
-    await db.commit()
+    await repo.email_intel_delete_domain(db, tenant_id, domain)
 
-    # Best-effort graph cleanup
     try:
         from easm_email.graph_builder import delete_domain_graph
         await asyncio.to_thread(delete_domain_graph, domain, tenant_id)

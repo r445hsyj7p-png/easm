@@ -57,85 +57,132 @@ def _write_analysis(tx, domain, tenant_id, spf_raw, dmarc_policy_str, spf_tree, 
         SET d.spf_raw = $spf, d.dmarc_policy = $dmarc, d.analyzed_at = $now
     """, fqdn=domain, tid=tenant_id, spf=spf_raw or "", dmarc=dmarc_policy_str, now=now)
 
-    # IP and ASN nodes
-    for ip in enriched_ips:
+    # ── IP and ASN nodes (batched) ────────────────────────────────────────────
+    ip_params = [
+        {"addr": ip.address, "version": ip.version, "ptr": ip.ptr or ""}
+        for ip in enriched_ips
+    ]
+    if ip_params:
         tx.run("""
-            MERGE (i:IP {address: $addr})
-            SET i.version = $version, i.ptr = $ptr
-        """, addr=ip.address, version=ip.version, ptr=ip.ptr or "")
+            UNWIND $ips AS ip
+            MERGE (i:IP {address: ip.addr})
+            SET i.version = ip.version, i.ptr = ip.ptr
+        """, ips=ip_params)
 
-        if ip.asn:
-            tx.run("""
-                MERGE (a:ASN {number: $num})
-                SET a.name = $name, a.country = $country, a.cidr = $cidr
-            """, num=ip.asn.number, name=ip.asn.name,
-                   country=ip.asn.country, cidr=ip.asn.cidr)
-            tx.run("""
-                MATCH (i:IP {address: $addr}), (a:ASN {number: $num})
-                MERGE (i)-[:BELONGS_TO]->(a)
-            """, addr=ip.address, num=ip.asn.number)
-
-    # MX server nodes and relationships
-    for mx in mx_servers:
+    asn_params = [
+        {"num": ip.asn.number, "name": ip.asn.name,
+         "country": ip.asn.country, "cidr": ip.asn.cidr}
+        for ip in enriched_ips if ip.asn
+    ]
+    if asn_params:
         tx.run("""
-            MERGE (m:MXServer {fqdn: $fqdn})
-            SET m.priority = $prio
-        """, fqdn=mx.fqdn, prio=mx.priority)
-        tx.run("""
-            MATCH (d:Domain {fqdn: $domain, tenant_id: $tid}), (m:MXServer {fqdn: $fqdn})
-            MERGE (d)-[:HAS_MX {priority: $prio}]->(m)
-        """, domain=domain, tid=tenant_id, fqdn=mx.fqdn, prio=mx.priority)
-        for ip in mx.ips:
-            tx.run("""
-                MATCH (m:MXServer {fqdn: $fqdn}), (i:IP {address: $addr})
-                MERGE (m)-[:RESOLVES_TO]->(i)
-            """, fqdn=mx.fqdn, addr=ip.address)
+            UNWIND $asns AS a
+            MERGE (n:ASN {number: a.num})
+            SET n.name = a.name, n.country = a.country, n.cidr = a.cidr
+        """, asns=asn_params)
 
-    # SPF include tree
+    belongs_params = [
+        {"addr": ip.address, "num": ip.asn.number}
+        for ip in enriched_ips if ip.asn
+    ]
+    if belongs_params:
+        tx.run("""
+            UNWIND $rels AS r
+            MATCH (i:IP {address: r.addr}), (a:ASN {number: r.num})
+            MERGE (i)-[:BELONGS_TO]->(a)
+        """, rels=belongs_params)
+
+    # ── MX server nodes and relationships (batched) ───────────────────────────
+    mx_params = [{"fqdn": mx.fqdn, "prio": mx.priority} for mx in mx_servers]
+    if mx_params:
+        tx.run("""
+            UNWIND $mxs AS mx
+            MERGE (m:MXServer {fqdn: mx.fqdn})
+            SET m.priority = mx.prio
+        """, mxs=mx_params)
+
+        tx.run("""
+            MATCH (d:Domain {fqdn: $domain, tenant_id: $tid})
+            UNWIND $mxs AS mx
+            MATCH (m:MXServer {fqdn: mx.fqdn})
+            MERGE (d)-[:HAS_MX {priority: mx.prio}]->(m)
+        """, domain=domain, tid=tenant_id, mxs=mx_params)
+
+    mx_ip_params = [
+        {"mx_fqdn": mx.fqdn, "addr": ip.address}
+        for mx in mx_servers
+        for ip in mx.ips
+    ]
+    if mx_ip_params:
+        tx.run("""
+            UNWIND $rels AS r
+            MATCH (m:MXServer {fqdn: r.mx_fqdn}), (i:IP {address: r.addr})
+            MERGE (m)-[:RESOLVES_TO]->(i)
+        """, rels=mx_ip_params)
+
+    # ── SPF tree (batched via flattened traversal) ────────────────────────────
     if spf_tree:
-        _write_spf_node(tx, domain, tenant_id, spf_tree, parent_name=None)
+        spf_data: dict = {"providers": set(), "ip_auths": [], "dom_to_prov": [], "prov_to_prov": []}
+        _collect_spf_data(spf_tree, root_domain=domain, parent_name=None, result=spf_data)
 
+        providers = list(spf_data["providers"])
+        if providers:
+            tx.run("""
+                UNWIND $names AS name
+                MERGE (:Provider {name: name})
+            """, names=providers)
 
-def _write_spf_node(tx, root_domain, tenant_id, node, parent_name):
-    # Direct IP authorizations on this node
-    for mech in node.mechanisms:
-        if mech.type in ("ip4", "ip6") and mech.value:
-            cidr_value = mech.value                    # e.g. "203.0.113.0/24" or "1.2.3.4"
-            addr = cidr_value.split("/")[0]            # base address used as unique key
-            is_network = "/" in cidr_value
-            # Store full CIDR as label so the graph shows "203.0.113.0/24" not "203.0.113.0"
+        if spf_data["ip_auths"]:
             tx.run("""
                 MATCH (d:Domain {fqdn: $domain, tenant_id: $tid})
-                MERGE (i:IP {address: $addr})
-                SET i.version    = CASE WHEN $mtype = 'ip4' THEN 4 ELSE 6 END,
-                    i.cidr       = $cidr,
-                    i.is_network = $is_net
-                MERGE (d)-[:SPF_AUTHORIZES {mechanism: $mtype, qualifier: $qual, cidr: $cidr}]->(i)
-            """, domain=root_domain, tid=tenant_id,
-                   addr=addr, cidr=cidr_value, is_net=is_network,
-                   mtype=mech.type, qual=mech.qualifier)
+                UNWIND $auths AS auth
+                MERGE (i:IP {address: auth.addr})
+                SET i.version    = CASE WHEN auth.mtype = 'ip4' THEN 4 ELSE 6 END,
+                    i.cidr       = auth.cidr,
+                    i.is_network = auth.is_net
+                MERGE (d)-[:SPF_AUTHORIZES {mechanism: auth.mtype, qualifier: auth.qual, cidr: auth.cidr}]->(i)
+            """, domain=domain, tid=tenant_id, auths=spf_data["ip_auths"])
 
-    # Recursive include/redirect children
+        if spf_data["dom_to_prov"]:
+            tx.run("""
+                MATCH (d:Domain {fqdn: $domain, tenant_id: $tid})
+                UNWIND $edges AS e
+                MATCH (p:Provider {name: e.child})
+                MERGE (d)-[:SPF_INCLUDES {depth: e.depth, mechanism: e.mech}]->(p)
+            """, domain=domain, tid=tenant_id, edges=spf_data["dom_to_prov"])
+
+        if spf_data["prov_to_prov"]:
+            tx.run("""
+                UNWIND $edges AS e
+                MATCH (p1:Provider {name: e.parent}), (p2:Provider {name: e.child})
+                MERGE (p1)-[:SPF_INCLUDES {depth: e.depth}]->(p2)
+            """, edges=spf_data["prov_to_prov"])
+
+
+def _collect_spf_data(node, root_domain: str, parent_name: str | None, result: dict) -> None:
+    """Flatten a recursive SPF tree into lists suitable for batched UNWIND writes."""
+    for mech in node.mechanisms:
+        if mech.type in ("ip4", "ip6") and mech.value:
+            cidr_value = mech.value
+            addr = cidr_value.split("/")[0]
+            result["ip_auths"].append({
+                "addr": addr, "cidr": cidr_value,
+                "is_net": "/" in cidr_value,
+                "mtype": mech.type, "qual": mech.qualifier,
+            })
+
     for child in node.children:
-        tx.run("""
-            MERGE (p:Provider {name: $name})
-        """, name=child.domain)
-
+        result["providers"].add(child.domain)
         mech_type = "redirect" if child.is_redirect else "include"
-
         if parent_name is None:
-            tx.run("""
-                MATCH (d:Domain {fqdn: $domain, tenant_id: $tid}), (p:Provider {name: $pname})
-                MERGE (d)-[:SPF_INCLUDES {depth: $depth, mechanism: $mech}]->(p)
-            """, domain=root_domain, tid=tenant_id,
-                   pname=child.domain, depth=child.depth, mech=mech_type)
+            result["dom_to_prov"].append({
+                "child": child.domain, "depth": child.depth, "mech": mech_type,
+            })
         else:
-            tx.run("""
-                MATCH (p1:Provider {name: $parent}), (p2:Provider {name: $child})
-                MERGE (p1)-[:SPF_INCLUDES {depth: $depth}]->(p2)
-            """, parent=parent_name, child=child.domain, depth=child.depth)
-
-        _write_spf_node(tx, root_domain, tenant_id, child, child.domain)
+            result["prov_to_prov"].append({
+                "parent": parent_name, "child": child.domain, "depth": child.depth,
+            })
+        _collect_spf_data(child, root_domain, child.domain, result)
 
 
 def get_graph_json(domain: str, tenant_id: str) -> dict:
@@ -246,32 +293,30 @@ def _delete_domain(tx, domain: str, tenant_id: str) -> None:
     # Collect IDs of related Provider and MXServer nodes before deletion so we
     # can remove those that become orphaned (no remaining relationships).
     # IP and ASN nodes are intentionally kept — they are shared across analyses.
-    provider_result = tx.run("""
-        MATCH (d:Domain {fqdn: $fqdn, tenant_id: $tid})-[:SPF_INCLUDES*1..10]->(p:Provider)
-        RETURN DISTINCT elementId(p) AS pid
-    """, fqdn=domain, tid=tenant_id)
-    provider_ids = [r["pid"] for r in provider_result]
+    provider_ids = [
+        r["pid"] for r in tx.run("""
+            MATCH (d:Domain {fqdn: $fqdn, tenant_id: $tid})-[:SPF_INCLUDES*1..10]->(p:Provider)
+            RETURN DISTINCT elementId(p) AS pid
+        """, fqdn=domain, tid=tenant_id)
+    ]
+    mx_ids = [
+        r["mid"] for r in tx.run("""
+            MATCH (d:Domain {fqdn: $fqdn, tenant_id: $tid})-[:HAS_MX]->(m:MXServer)
+            RETURN DISTINCT elementId(m) AS mid
+        """, fqdn=domain, tid=tenant_id)
+    ]
 
-    mx_result = tx.run("""
-        MATCH (d:Domain {fqdn: $fqdn, tenant_id: $tid})-[:HAS_MX]->(m:MXServer)
-        RETURN DISTINCT elementId(m) AS mid
-    """, fqdn=domain, tid=tenant_id)
-    mx_ids = [r["mid"] for r in mx_result]
-
-    # Detach-delete the Domain node (removes all its relationships)
     tx.run("""
         MATCH (d:Domain {fqdn: $fqdn, tenant_id: $tid})
         DETACH DELETE d
     """, fqdn=domain, tid=tenant_id)
 
-    # Delete Provider nodes that are now isolated
     if provider_ids:
         tx.run("""
             MATCH (p:Provider) WHERE elementId(p) IN $ids AND NOT EXISTS((p)--())
             DELETE p
         """, ids=provider_ids)
 
-    # Delete MXServer nodes that are now isolated
     if mx_ids:
         tx.run("""
             MATCH (m:MXServer) WHERE elementId(m) IN $ids AND NOT EXISTS((m)--())

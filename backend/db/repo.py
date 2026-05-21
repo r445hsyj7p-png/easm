@@ -572,3 +572,66 @@ async def save_settings(db: AsyncSession, tenant_id: str, settings: dict) -> Non
         {"s": json.dumps(settings), "tid": tenant_id},
     )
     await db.commit()
+
+
+# ─── Email Intelligence jobs ──────────────────────────────────────────────────
+
+async def email_intel_create_job(
+    db: AsyncSession, job_id: str, tenant_id: str, domain: str,
+) -> None:
+    await db.execute(text("""
+        INSERT INTO email_intel_jobs (id, tenant_id, domain, status, created_at)
+        VALUES (:id, :tid, :domain, 'pending', now())
+    """), {"id": job_id, "tid": tenant_id, "domain": domain})
+    await db.commit()
+
+
+async def email_intel_get_job(
+    db: AsyncSession, job_id: str, tenant_id: str,
+) -> dict | None:
+    row = (await db.execute(text("""
+        SELECT id, tenant_id, domain, status, risk_score,
+               spf_raw, dmarc_raw, mx_records, findings, graph_summary,
+               error, created_at, completed_at
+        FROM email_intel_jobs
+        WHERE id = :id AND tenant_id = :tid
+    """), {"id": job_id, "tid": tenant_id})).mappings().first()
+    return dict(row) if row else None
+
+
+async def email_intel_has_complete_job(
+    db: AsyncSession, tenant_id: str, domain: str,
+) -> bool:
+    row = (await db.execute(text("""
+        SELECT 1 FROM email_intel_jobs
+        WHERE tenant_id = :tid AND domain = :domain AND status = 'complete'
+        LIMIT 1
+    """), {"tid": tenant_id, "domain": domain})).first()
+    return row is not None
+
+
+async def email_intel_list_domains(
+    db: AsyncSession, tenant_id: str, limit: int = 50,
+) -> list[dict]:
+    # Prefer complete > failed > running/pending so the list shows the last
+    # successful result even while a re-analysis is in progress.
+    rows = (await db.execute(text("""
+        SELECT DISTINCT ON (domain)
+            id, domain, status, risk_score, created_at, completed_at
+        FROM email_intel_jobs
+        WHERE tenant_id = :tid
+        ORDER BY domain,
+                 CASE status WHEN 'complete' THEN 0 WHEN 'failed' THEN 1 ELSE 2 END,
+                 created_at DESC
+        LIMIT :limit
+    """), {"tid": tenant_id, "limit": limit})).mappings().all()
+    return [dict(r) for r in rows]
+
+
+async def email_intel_delete_domain(
+    db: AsyncSession, tenant_id: str, domain: str,
+) -> None:
+    await db.execute(text("""
+        DELETE FROM email_intel_jobs WHERE tenant_id = :tid AND domain = :domain
+    """), {"tid": tenant_id, "domain": domain})
+    await db.commit()
