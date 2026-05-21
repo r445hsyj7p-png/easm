@@ -97,8 +97,9 @@ def _update_job(conn, job_id: str, **fields) -> None:
 )
 def email_intel_analyze(self, job_id: str, domain: str, tenant_id: str):
     log.info("[email_intel] start domain=%s job=%s", domain, job_id)
-    conn = _db_conn()
+    conn = None
     try:
+        conn = _db_conn()
         _update_job(conn, job_id, status=JobStatus.RUNNING)
 
         # ── Step 1: DNS collection ────────────────────────────────────────
@@ -194,10 +195,12 @@ def email_intel_analyze(self, job_id: str, domain: str, tenant_id: str):
 
     except Exception as exc:
         log.exception("[email_intel] failed domain=%s: %s", domain, exc)
-        try:
-            _update_job(conn, job_id, status=JobStatus.FAILED, error=str(exc)[:500])
-        except Exception:
-            pass
+        if conn:
+            try:
+                _update_job(conn, job_id, status=JobStatus.FAILED, error=str(exc)[:500])
+            except Exception:
+                pass
         raise self.retry(exc=exc, countdown=30)
     finally:
-        conn.close()
+        if conn:
+            conn.close()

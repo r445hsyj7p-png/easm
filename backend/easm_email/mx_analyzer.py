@@ -82,4 +82,5 @@ def analyze(mx_records: list[MxRecord]) -> list[MxServerInfo]:
     workers = min(len(mx_records), _MAX_MX_WORKERS)
     with ThreadPoolExecutor(max_workers=workers) as pool:
         futures = {pool.submit(_resolve_one, mx): mx for mx in mx_records}
-        return [fut.result() for fut in as_completed(futures)]
+        results = [fut.result() for fut in as_completed(futures)]
+    return sorted(results, key=lambda mx: mx.priority)

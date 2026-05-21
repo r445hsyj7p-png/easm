@@ -45,15 +45,15 @@ export function ProviderTable({ enrichedIps = [] }) {
   // Group by provider
   const byProvider = {};
   for (const ip of enrichedIps) {
-    const key = ip.provider_name;
-    if (!byProvider[key]) byProvider[key] = { name: key, category: ip.provider_category, ips: [] };
+    const key = ip.provider_name ?? "Unknown";
+    const category = ip.provider_category ?? "unknown";
+    if (!byProvider[key]) byProvider[key] = { name: key, category, ips: [] };
     byProvider[key].ips.push(ip.address);
   }
   const rows = Object.values(byProvider).sort((a, b) => {
-    // Unknown providers first (highest risk), then alphabetical
     if (a.category === "unknown" && b.category !== "unknown") return -1;
     if (b.category === "unknown" && a.category !== "unknown") return 1;
-    return a.name.localeCompare(b.name);
+    return (a.name ?? "").localeCompare(b.name ?? "");
   });
 
   if (!rows.length) {
