@@ -20,6 +20,9 @@
 x-env: &env
   DATABASE_URL: postgresql://${POSTGRES_USER:-easm}:${POSTGRES_PASSWORD:-changeme}@postgres:5432/${POSTGRES_DB:-easm}
   REDIS_URL: redis://:${REDIS_PASSWORD:-changeme}@redis:6379/0
+  NEO4J_URI: bolt://neo4j:7687
+  NEO4J_USER: neo4j
+  NEO4J_PASSWORD: ${NEO4J_PASSWORD:-changeme_neo4j}
   SECRET_KEY: ${SECRET_KEY:-please-set-a-real-secret-key-in-env}
   HIBP_API_KEY: ${HIBP_API_KEY:-}
   VIRUSTOTAL_API_KEY: ${VIRUSTOTAL_API_KEY:-}
@@ -273,6 +276,62 @@ services:
     restart: unless-stopped
 
 
+  # ── Neo4j Graph Database (Email Intelligence) ────────────────────────────
+  neo4j:
+    image: neo4j:5.16-community
+    restart: unless-stopped
+    environment:
+      NEO4J_AUTH: neo4j/${NEO4J_PASSWORD:-changeme_neo4j}
+      NEO4J_server_memory_heap_initial__size: 512m
+      NEO4J_server_memory_heap_max__size: 1G
+      NEO4J_server_memory_pagecache__size: 256m
+    volumes:
+      - neo4j_data:/data
+      - neo4j_logs:/logs
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:7474 || exit 1"]
+      interval: 30s
+      timeout: 10s
+      start_period: 60s
+      retries: 5
+    networks:
+      - easm
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # ── Celery Worker: Email Intelligence (DNS-only, lightweight) ─────────────
+  worker-email-intel:
+    build:
+      context: ./backend
+      dockerfile: ../docker/Dockerfile.email-worker
+    image: easm-email-worker:latest
+    restart: unless-stopped
+    command: >
+      celery -A workers.email_intel_tasks worker
+      --queues=email_intel
+      --concurrency=2
+      --loglevel=info
+      --hostname=email-intel@%h
+    environment:
+      <<: *env
+    depends_on:
+      redis:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+      neo4j:
+        condition: service_healthy
+    networks:
+      - easm
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
 networks:
   easm:
     driver: bridge
@@ -299,3 +358,7 @@ volumes:
   backups:
     driver: local
     # stored at /var/lib/docker/volumes/easm_backups
+  neo4j_data:
+    driver: local
+  neo4j_logs:
+    driver: local

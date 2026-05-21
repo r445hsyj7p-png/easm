@@ -1,0 +1,28 @@
+# =============================================================================
+# Dockerfile.email-worker — Lightweight Celery worker for Email Intelligence
+# No security-tool binaries needed — DNS + Python only.
+# =============================================================================
+
+FROM python:3.11-slim
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    libpq-dev \
+    gcc \
+    ca-certificates \
+    dnsutils \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+# Install Python dependencies (subset of main requirements)
+COPY requirements-email.txt ./
+RUN pip install --no-cache-dir -r requirements-email.txt
+
+COPY . .
+
+ENV PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1
+
+CMD ["celery", "-A", "workers.email_intel_tasks", "worker", \
+     "--queues=email_intel", "--concurrency=2", \
+     "--loglevel=info", "--hostname=email-intel@%h"]

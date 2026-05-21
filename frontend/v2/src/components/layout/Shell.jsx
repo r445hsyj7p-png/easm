@@ -4,7 +4,7 @@ import {
   LayoutDashboard, AlertTriangle, Globe, Cpu, Radar,
   RefreshCw, Settings, LogOut, Shield, ChevronLeft,
   ChevronRight, ArrowLeft, Zap, Sun, Moon, Monitor,
-  Target, ShieldAlert, Layers,
+  Target, ShieldAlert, Layers, Mail,
 } from "lucide-react";
 import { toast } from "sonner";
 import { T, alpha } from "../../theme";
@@ -23,6 +23,7 @@ const NAV_ITEMS = [
   { path: "/mcp",             label: "MCP Exposure",    Icon: Cpu,           countKey: "mcp", alert: true },
   { path: "/intel",           label: "Intelligence",    Icon: Radar                                 },
   { path: "/scans",           label: "Scans",           Icon: RefreshCw                             },
+  { path: "/email-intel",    label: "Email Intel",     Icon: Mail                                  },
 ];
 
 function NavItem({ item, active, collapsed, counts }) {
