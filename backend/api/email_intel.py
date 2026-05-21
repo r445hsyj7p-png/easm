@@ -8,11 +8,11 @@ import json
 import uuid
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from api.main import get_auth, AuthContext
+from api.main import get_auth, AuthContext, limiter
 from db.database import get_db
 from easm_email.models import (
     AnalyzeRequest, AnalyzeResponse, ResultResponse,
@@ -35,7 +35,9 @@ def _risk_band(score: int) -> str:
 # ── POST /analyze ──────────────────────────────────────────────────────────────
 
 @router.post("/analyze", response_model=AnalyzeResponse)
+@limiter.limit("10/minute")
 async def analyze(
+    request: Request,    # required by SlowAPI
     tenant_id: str,
     body: AnalyzeRequest,
     ctx: AuthContext = Depends(get_auth),
@@ -162,12 +164,16 @@ async def list_domains(
 ):
     ctx.assert_own_tenant(tenant_id)
 
+    # Prefer complete > failed > running/pending for each domain so the list
+    # shows the last successful result even while a re-analysis is in progress.
     rows = (await db.execute(text("""
         SELECT DISTINCT ON (domain)
             id, domain, status, risk_score, created_at, completed_at
         FROM email_intel_jobs
         WHERE tenant_id = :tid
-        ORDER BY domain, created_at DESC
+        ORDER BY domain,
+                 CASE status WHEN 'complete' THEN 0 WHEN 'failed' THEN 1 ELSE 2 END,
+                 created_at DESC
         LIMIT :limit
     """), {"tid": tenant_id, "limit": limit})).mappings().all()
 

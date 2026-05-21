@@ -12,6 +12,7 @@ import sys
 
 import psycopg2
 from celery import Celery
+from celery.signals import worker_ready
 from datetime import datetime, timezone
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
@@ -38,6 +39,32 @@ celery_app.conf.update(
 )
 
 _JSONB_COLS = {"mx_records", "findings", "graph_summary"}
+
+# Cypher statements to create Neo4j constraints/indexes on first startup
+_NEO4J_INIT_STMTS = [
+    "CREATE CONSTRAINT domain_unique IF NOT EXISTS FOR (d:Domain) REQUIRE (d.fqdn, d.tenant_id) IS UNIQUE",
+    "CREATE CONSTRAINT provider_unique IF NOT EXISTS FOR (p:Provider) REQUIRE p.name IS UNIQUE",
+    "CREATE CONSTRAINT ip_unique IF NOT EXISTS FOR (i:IP) REQUIRE i.address IS UNIQUE",
+    "CREATE CONSTRAINT asn_unique IF NOT EXISTS FOR (a:ASN) REQUIRE a.number IS UNIQUE",
+    "CREATE CONSTRAINT mxserver_unique IF NOT EXISTS FOR (m:MXServer) REQUIRE m.fqdn IS UNIQUE",
+    "CREATE INDEX domain_tenant_idx IF NOT EXISTS FOR (d:Domain) ON (d.tenant_id)",
+    "CREATE INDEX ip_address_idx IF NOT EXISTS FOR (i:IP) ON (i.address)",
+    "CREATE INDEX asn_number_idx IF NOT EXISTS FOR (a:ASN) ON (a.number)",
+]
+
+
+@worker_ready.connect
+def _init_neo4j_schema(**kwargs):
+    """Apply Neo4j constraints and indexes once when the worker starts."""
+    try:
+        from easm_email.graph_builder import get_driver
+        driver = get_driver()
+        with driver.session() as session:
+            for stmt in _NEO4J_INIT_STMTS:
+                session.run(stmt)
+        log.info("[email_intel] Neo4j schema initialised")
+    except Exception as e:
+        log.warning("[email_intel] Neo4j schema init skipped (will retry on next startup): %s", e)
 
 
 def _db_conn():
@@ -132,13 +159,24 @@ def email_intel_analyze(self, job_id: str, domain: str, tenant_id: str):
             "asn_count": result.asn_count,
             "mx_count": result.mx_count,
         })
-        mx_json = json.dumps([
-            {
-                "fqdn": mx.fqdn,
-                "priority": mx.priority,
-                "ips": [{"address": ip.address, "version": ip.version, "ptr": ip.ptr}
-                        for ip in mx.ips],
+        # Build lookup so provider/ASN info is stored in mx_records JSONB.
+        # The frontend uses this to show provider classification without a Neo4j query.
+        enriched_by_addr = {e.address: e for e in enriched_ips}
+
+        def _ip_dict(ip) -> dict:
+            e = enriched_by_addr.get(ip.address)
+            return {
+                "address": ip.address,
+                "version": ip.version,
+                "ptr": ip.ptr,
+                "provider_name": e.provider_name if e else "Unknown",
+                "provider_category": e.provider_category if e else "unknown",
+                "asn": ({"number": e.asn.number, "name": e.asn.name, "country": e.asn.country}
+                        if e and e.asn else None),
             }
+
+        mx_json = json.dumps([
+            {"fqdn": mx.fqdn, "priority": mx.priority, "ips": [_ip_dict(ip) for ip in mx.ips]}
             for mx in mx_servers
         ])
 

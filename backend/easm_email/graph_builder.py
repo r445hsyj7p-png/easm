@@ -100,15 +100,20 @@ def _write_spf_node(tx, root_domain, tenant_id, node, parent_name):
     # Direct IP authorizations on this node
     for mech in node.mechanisms:
         if mech.type in ("ip4", "ip6") and mech.value:
-            # Strip CIDR notation to get the base address for the node ID
-            addr = mech.value.split("/")[0]
+            cidr_value = mech.value                    # e.g. "203.0.113.0/24" or "1.2.3.4"
+            addr = cidr_value.split("/")[0]            # base address used as unique key
+            is_network = "/" in cidr_value
+            # Store full CIDR as label so the graph shows "203.0.113.0/24" not "203.0.113.0"
             tx.run("""
                 MATCH (d:Domain {fqdn: $domain, tenant_id: $tid})
                 MERGE (i:IP {address: $addr})
-                SET i.version = CASE WHEN $mtype = 'ip4' THEN 4 ELSE 6 END
-                MERGE (d)-[:SPF_AUTHORIZES {mechanism: $mtype, qualifier: $qual}]->(i)
+                SET i.version    = CASE WHEN $mtype = 'ip4' THEN 4 ELSE 6 END,
+                    i.cidr       = $cidr,
+                    i.is_network = $is_net
+                MERGE (d)-[:SPF_AUTHORIZES {mechanism: $mtype, qualifier: $qual, cidr: $cidr}]->(i)
             """, domain=root_domain, tid=tenant_id,
-                   addr=addr, mtype=mech.type, qual=mech.qualifier)
+                   addr=addr, cidr=cidr_value, is_net=is_network,
+                   mtype=mech.type, qual=mech.qualifier)
 
     # Recursive include/redirect children
     for child in node.children:
@@ -207,11 +212,12 @@ def _read_graph(tx, domain: str, tenant_id: str) -> dict:
     # MX → IP
     for rec in tx.run("""
         MATCH (d:Domain {fqdn: $fqdn, tenant_id: $tid})-[:HAS_MX]->(m:MXServer)-[:RESOLVES_TO]->(i:IP)
-        RETURN m.fqdn AS mx_fqdn, i.address AS ip_addr, i.version AS version
+        RETURN m.fqdn AS mx_fqdn, i.address AS ip_addr, i.version AS version,
+               coalesce(i.cidr, i.address) AS label
     """, fqdn=domain, tid=tenant_id):
         mx_id = f"mx:{rec['mx_fqdn']}"
         ip_id = f"ip:{rec['ip_addr']}"
-        add_node(ip_id, rec["ip_addr"], "ip", {"version": rec["version"]})
+        add_node(ip_id, rec["label"], "ip", {"version": rec["version"]})
         add_edge(mx_id, ip_id, "RESOLVES_TO")
 
     # IP → ASN
@@ -231,11 +237,44 @@ def _read_graph(tx, domain: str, tenant_id: str) -> dict:
 
 
 def delete_domain_graph(domain: str, tenant_id: str) -> None:
-    """Remove the Domain node and its outgoing SPF/MX relationships before re-analysis."""
+    """Remove a Domain node and clean up Provider/MXServer nodes that become orphaned."""
     driver = get_driver()
     with driver.session() as session:
-        session.execute_write(lambda tx: tx.run("""
-            MATCH (d:Domain {fqdn: $fqdn, tenant_id: $tid})
-            OPTIONAL MATCH (d)-[r]-()
-            DELETE r, d
-        """, fqdn=domain, tid=tenant_id))
+        session.execute_write(_delete_domain, domain, tenant_id)
+
+
+def _delete_domain(tx, domain: str, tenant_id: str) -> None:
+    # Collect IDs of related Provider and MXServer nodes before deletion so we
+    # can remove those that become orphaned (no remaining relationships).
+    # IP and ASN nodes are intentionally kept — they are shared across analyses.
+    provider_result = tx.run("""
+        MATCH (d:Domain {fqdn: $fqdn, tenant_id: $tid})-[:SPF_INCLUDES*1..10]->(p:Provider)
+        RETURN DISTINCT elementId(p) AS pid
+    """, fqdn=domain, tid=tenant_id)
+    provider_ids = [r["pid"] for r in provider_result]
+
+    mx_result = tx.run("""
+        MATCH (d:Domain {fqdn: $fqdn, tenant_id: $tid})-[:HAS_MX]->(m:MXServer)
+        RETURN DISTINCT elementId(m) AS mid
+    """, fqdn=domain, tid=tenant_id)
+    mx_ids = [r["mid"] for r in mx_result]
+
+    # Detach-delete the Domain node (removes all its relationships)
+    tx.run("""
+        MATCH (d:Domain {fqdn: $fqdn, tenant_id: $tid})
+        DETACH DELETE d
+    """, fqdn=domain, tid=tenant_id)
+
+    # Delete Provider nodes that are now isolated
+    if provider_ids:
+        tx.run("""
+            MATCH (p:Provider) WHERE elementId(p) IN $ids AND NOT EXISTS((p)--())
+            DELETE p
+        """, ids=provider_ids)
+
+    # Delete MXServer nodes that are now isolated
+    if mx_ids:
+        tx.run("""
+            MATCH (m:MXServer) WHERE elementId(m) IN $ids AND NOT EXISTS((m)--())
+            DELETE m
+        """, ids=mx_ids)

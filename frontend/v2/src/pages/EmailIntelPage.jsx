@@ -221,8 +221,9 @@ export default function EmailIntelPage() {
   };
 
   const isRunning = activeResult?.status === "running" || activeResult?.status === "pending";
+  // IPs now carry provider_name/provider_category from the backend JSONB
   const enrichedIps = activeResult?.mx_records
-    ?.flatMap(mx => (mx.ips || []).map(ip => ({ ...ip, provider_name: "Unknown", provider_category: "unknown" })))
+    ?.flatMap(mx => mx.ips || [])
     ?? [];
 
   return (

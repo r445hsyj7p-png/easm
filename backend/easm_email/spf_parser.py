@@ -141,7 +141,11 @@ def _parse_node(
     if domain in visited:
         node.errors.append(f"CYCLE_DETECTED: {domain} already visited in this chain")
         return node
-    visited.add(domain)
+
+    # Copy-on-enter: each branch gets its own view of the ancestor chain so
+    # the same domain can legitimately appear in two independent sibling branches
+    # without triggering a false-positive cycle detection.
+    branch_visited = visited | {domain}
 
     if depth >= MAX_DEPTH:
         node.errors.append(f"MAX_DEPTH_REACHED at depth {depth}")
@@ -172,14 +176,14 @@ def _parse_node(
         if mech.type == "include" and mech.value:
             lookup_counter[0] += 1
             child = _parse_node(
-                resolver, mech.value, None, depth + 1, lookup_counter, visited
+                resolver, mech.value, None, depth + 1, lookup_counter, branch_visited
             )
             node.children.append(child)
 
         elif mech.type == "redirect" and mech.value:
             lookup_counter[0] += 1
             child = _parse_node(
-                resolver, mech.value, None, depth + 1, lookup_counter, visited,
+                resolver, mech.value, None, depth + 1, lookup_counter, branch_visited,
                 is_redirect=True,
             )
             node.children.append(child)

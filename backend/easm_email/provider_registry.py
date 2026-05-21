@@ -55,8 +55,9 @@ PROVIDERS: list[ProviderEntry] = [
         ["mimecast.com", "mimecastprotect.com"],
     ),
     ProviderEntry(
+        # 148.163.0.0/16 is MessageBird/SparkPost — do NOT duplicate in Mailchimp
         "SparkPost", "email_saas",
-        ["148.163.0.0/16", "205.201.128.0/20"],
+        ["148.163.0.0/16"],
         ["sparkpostmail.com", "sparkpost.com", "messagebird.com"],
     ),
     ProviderEntry(
@@ -65,8 +66,9 @@ PROVIDERS: list[ProviderEntry] = [
         ["mtasv.net", "postmarkapp.com"],
     ),
     ProviderEntry(
+        # 148.163.0.0/16 belongs to SparkPost/MessageBird — excluded here
         "Mailchimp / Mandrill", "email_saas",
-        ["198.2.128.0/18", "205.201.128.0/20", "198.2.176.0/20"],
+        ["198.2.128.0/18", "198.2.176.0/20"],
         ["mcsv.net", "mailchimp.com", "mandrill.com", "mandrillapp.com"],
     ),
     ProviderEntry(

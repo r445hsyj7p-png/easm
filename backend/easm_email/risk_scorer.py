@@ -3,6 +3,8 @@ Email infrastructure risk scorer — heuristic, 0–100 (higher = more risk).
 Pure computation: no I/O, no network calls.
 """
 from __future__ import annotations
+
+_RFC_LOOKUP_LIMIT = 10  # RFC 7208 §4.6.4
 from dataclasses import dataclass, field
 
 from .spf_parser import SpfNode, collect_all_includes, max_depth, count_includes
@@ -95,7 +97,7 @@ def score(
             ))
 
         lc = spf_tree.lookup_count
-        if lc >= MAX_DNS_LOOKUPS := 10:
+        if lc >= _RFC_LOOKUP_LIMIT:
             points += 15
             findings.append(EmailFinding(
                 code="SPF_LOOKUP_LIMIT", severity="HIGH",
