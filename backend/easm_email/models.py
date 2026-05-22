@@ -42,6 +42,9 @@ class GraphSummary(BaseModel):
     mta_sts_mode: Optional[str] = None
     tls_rpt_present: bool = False
     dnssec_signed: bool = False
+    score_delta: Optional[int] = None
+    dkim_missing_providers: list[str] = []
+    rua_external_domains: list[str] = []
 
 
 class AnalyzeResponse(BaseModel):

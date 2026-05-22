@@ -3,15 +3,21 @@ Email infrastructure risk scorer — heuristic, 0–100 (higher = more risk).
 Pure computation: no I/O, no network calls.
 """
 from __future__ import annotations
+import fnmatch
+import ipaddress
 
 _RFC_LOOKUP_LIMIT = 10  # RFC 7208 §4.6.4
 from dataclasses import dataclass, field
 
-from .spf_parser import SpfNode, collect_all_includes, max_depth, count_includes
+from .spf_parser import (
+    SpfNode, collect_all_includes, max_depth, count_includes,
+    extract_spf_ips, has_mechanism_type,
+)
 from .dmarc_parser import DmarcPolicy
 from .enricher import EnrichedIP
 from .mx_analyzer import MxServerInfo
 from .models import EmailFinding
+from .provider_registry import PROVIDER_SPF_INCLUDES, PROVIDER_EXPECTED_SELECTORS
 
 
 @dataclass
@@ -26,6 +32,12 @@ class ScoreResult:
     ip_count: int = 0
     asn_count: int = 0
     mx_count: int = 0
+    # Structured output for UI rendering (populated by check sections below)
+    spf_uncovered_ips: list[str] = field(default_factory=list)
+    mta_sts_uncovered_fqdns: list[str] = field(default_factory=list)
+    dkim_missing_providers: list[str] = field(default_factory=list)
+    rua_external_domains: list[str] = field(default_factory=list)
+    score_delta: int | None = None   # injected by task after prev-score DB lookup
 
 
 def risk_band(score: int) -> str:
@@ -40,13 +52,20 @@ def score(
     dmarc: DmarcPolicy,
     enriched_ips: list[EnrichedIP],
     mx_servers: list[MxServerInfo],
-    dkim_results=None,   # list[DkimResult] | None
-    rbl_hits=None,       # list[RblHit] | None
-    mta_sts=None,        # MtaStsResult | None
+    dkim_results=None,       # list[DkimResult] | None
+    rbl_hits=None,           # list[RblHit] | None
+    mta_sts=None,            # MtaStsResult | None
     dnssec_signed: bool = False,
+    domain: str = "",
 ) -> ScoreResult:
     points = 0
     findings: list[EmailFinding] = []
+
+    # Structured output accumulators (returned in ScoreResult for UI use)
+    _spf_uncovered_ips: list[str] = []
+    _mta_sts_uncovered_fqdns: list[str] = []
+    _dkim_missing_providers: list[str] = []
+    _rua_external_domains: list[str] = []
 
     # ── SPF ────────────────────────────────────────────────────────────────
     if spf_tree is None or spf_tree.raw is None:
@@ -209,6 +228,23 @@ def score(
                 remediation="Prüfen Sie DSGVO-Konformität. Viele Provider haben ruf= aus Datenschutzgründen abgeschaltet.",
             ))
 
+        # ── Feature 10: rua= external domain check ─────────────────────────
+        if dmarc.rua and domain:
+            for _addr in dmarc.rua:
+                if _addr.startswith("mailto:"):
+                    _rua_dom = _addr[7:].rsplit("@", 1)[-1].lower().strip()
+                    if _rua_dom and _rua_dom != domain and not _rua_dom.endswith("." + domain):
+                        _rua_external_domains.append(_rua_dom)
+            _rua_external_domains = list(dict.fromkeys(_rua_external_domains))
+            if _rua_external_domains:
+                findings.append(EmailFinding(
+                    code="DMARC_EXTERNAL_REPORTING", severity="INFO",
+                    title="DMARC-Aggregate-Reports gehen an externe Domain(s)",
+                    detail=f"rua= sendet Berichte an: {', '.join(_rua_external_domains)}. "
+                           "Drittanbieter erhalten Einblick in E-Mail-Volumen und Authentifizierungsfehler.",
+                    remediation="Prüfen Sie ob der Reporting-Anbieter vertrauenswürdig ist und DSGVO-konform.",
+                ))
+
     # ── DNSSEC ─────────────────────────────────────────────────────────────
     if not dnssec_signed:
         points += 5
@@ -252,6 +288,40 @@ def score(
             remediation="Prüfen Sie, ob diese Domain E-Mail empfangen soll.",
         ))
 
+    # ── Feature 1: SPF↔MX Konsistenz ──────────────────────────────────────
+    # Walk the fully-resolved SPF tree for explicit ip4/ip6 ranges and verify
+    # each MX IP is covered. Skip if: tree incomplete (lookup limit hit), or
+    # a bare `mx` mechanism exists (implicitly authorises all MX hosts).
+    if spf_tree is not None and spf_tree.lookup_count < _RFC_LOOKUP_LIMIT:
+        if not has_mechanism_type(spf_tree, "mx"):
+            _spf_nets = []
+            for _cidr in extract_spf_ips(spf_tree):
+                try:
+                    _spf_nets.append(ipaddress.ip_network(_cidr, strict=False))
+                except ValueError:
+                    pass
+            if _spf_nets:
+                for _mx in mx_servers:
+                    for _ip in _mx.ips:
+                        try:
+                            _addr = ipaddress.ip_address(_ip.address)
+                            if not any(_addr in _net for _net in _spf_nets):
+                                _spf_uncovered_ips.append(_ip.address)
+                        except ValueError:
+                            pass
+                if _spf_uncovered_ips:
+                    _n = len(_spf_uncovered_ips)
+                    points += min(_n * 8, 20)
+                    findings.append(EmailFinding(
+                        code="MX_NOT_IN_SPF", severity="HIGH",
+                        title=f"{_n} MX-IP(s) nicht durch explizite SPF-Regeln abgedeckt",
+                        detail=f"Die IP(s) {', '.join(_spf_uncovered_ips[:3])}{'…' if _n > 3 else ''} "
+                               f"sind in keiner ip4:/ip6:-Regel des vollständig aufgelösten SPF-Records erfasst. "
+                               f"Prüfen Sie, ob der zugehörige include:-Eintrag fehlt.",
+                        remediation="Ergänzen Sie den fehlenden include:-Eintrag für diesen Provider "
+                                    "oder fügen Sie die IP-Range explizit als ip4: hinzu.",
+                    ))
+
     # ── DKIM ───────────────────────────────────────────────────────────────
     dkim_results = dkim_results or []
     if not dkim_results:
@@ -284,9 +354,29 @@ def score(
                     remediation="Ersetzen Sie den Schlüssel durch RSA-2048 oder besser Ed25519.",
                 ))
 
+    # ── Feature 2: Provider↔DKIM Erwartungsabgleich ────────────────────────
+    if spf_tree:
+        _spf_includes = collect_all_includes(spf_tree)
+        _found_selectors = {r.selector for r in dkim_results if not r.revoked}
+        for _pname, _include_doms in PROVIDER_SPF_INCLUDES.items():
+            if not any(d in _spf_includes for d in _include_doms):
+                continue
+            _expected = PROVIDER_EXPECTED_SELECTORS.get(_pname, [])
+            if _expected and not any(sel in _found_selectors for sel in _expected):
+                _dkim_missing_providers.append(_pname)
+        for _pname in _dkim_missing_providers:
+            _expected = PROVIDER_EXPECTED_SELECTORS.get(_pname, [])
+            findings.append(EmailFinding(
+                code="DKIM_MISSING_FOR_PROVIDER", severity="LOW",
+                title=f"Kein DKIM-Selector für {_pname} gefunden",
+                detail=f"{_pname} ist in SPF autorisiert, aber keiner der erwarteten Selektoren "
+                       f"({', '.join(_expected)}) ist publiziert.",
+                remediation=f"Prüfen Sie die DKIM-Konfiguration in {_pname} und "
+                            f"publizieren Sie den DKIM-TXT-Record für Ihre Domain.",
+            ))
+
     # ── RBL ────────────────────────────────────────────────────────────────
     rbl_hits = rbl_hits or []
-    # PBL hits (severity=INFO) don't contribute to score — expected for many corporate IPs
     scored_hits = [h for h in rbl_hits if h.severity != "INFO"]
     for hit in scored_hits:
         penalty = 20 if hit.severity == "CRITICAL" else 12
@@ -298,7 +388,6 @@ def score(
             detail=hit.description,
             remediation="Prüfen Sie den Host auf Kompromittierung und beantragen Sie eine Delistung bei Spamhaus.",
         ))
-    # PBL as INFO finding (no points)
     pbl_hits = [h for h in rbl_hits if h.severity == "INFO"]
     if pbl_hits:
         ips_str = ", ".join(h.ip for h in pbl_hits[:3])
@@ -348,12 +437,31 @@ def score(
                     remediation="Setzen Sie mode=enforce oder entfernen Sie den DNS-Record.",
                 ))
 
+            # ── Feature 3: MTA-STS↔MX Konsistenz ──────────────────────────
+            if mta_sts.policy_reachable and mta_sts.mx_entries and mx_servers:
+                _mta_sts_uncovered_fqdns = [
+                    mx.fqdn for mx in mx_servers
+                    if not any(fnmatch.fnmatch(mx.fqdn, pat) for pat in mta_sts.mx_entries)
+                ]
+                if _mta_sts_uncovered_fqdns:
+                    _n = len(_mta_sts_uncovered_fqdns)
+                    points += 8
+                    findings.append(EmailFinding(
+                        code="MTA_STS_MX_NOT_COVERED", severity="MEDIUM",
+                        title=f"{_n} MX-Server nicht in MTA-STS-Policy abgedeckt",
+                        detail=f"Die Policy-Datei kennt folgende MX-Hosts nicht: "
+                               f"{', '.join(_mta_sts_uncovered_fqdns[:3])}{'…' if _n > 3 else ''}. "
+                               f"TLS-Enforcement gilt nur für in der Policy gelistete Hosts.",
+                        remediation="Aktualisieren Sie die MTA-STS-Policy-Datei und erhöhen Sie die version-ID, "
+                                    "damit sendende Server die neue Policy abrufen.",
+                    ))
+
         if not mta_sts.tls_rpt_present:
             findings.append(EmailFinding(
                 code="TLS_RPT_MISSING", severity="INFO",
                 title="TLS-RPT nicht konfiguriert",
                 detail="Ohne _smtp._tls TXT-Record erhalten Sie keine Berichte über TLS-Verbindungsfehler bei eingehenden Mails.",
-                remediation="Erstellen Sie: _smtp._tls.<domain> TXT \"v=TLSRPTv1; rua=mailto:tls-rpt@ihre-domain.com\"",
+                remediation='Erstellen Sie: _smtp._tls.<domain> TXT "v=TLSRPTv1; rua=mailto:tls-rpt@ihre-domain.com"',
             ))
 
     # ── Compute stats ──────────────────────────────────────────────────────
@@ -371,4 +479,8 @@ def score(
         ip_count=len(enriched_ips),
         asn_count=len(asn_set),
         mx_count=len(mx_servers),
+        spf_uncovered_ips=_spf_uncovered_ips,
+        mta_sts_uncovered_fqdns=_mta_sts_uncovered_fqdns,
+        dkim_missing_providers=_dkim_missing_providers,
+        rua_external_domains=_rua_external_domains,
     )

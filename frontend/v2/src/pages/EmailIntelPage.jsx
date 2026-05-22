@@ -10,6 +10,111 @@ import { useApp } from "../context/AppContext";
 import { EmailRiskBadge, BAND_COLORS } from "../components/email/EmailRiskBadge";
 import { EmailGraph } from "../components/email/EmailGraph";
 
+function ScoreDeltaBadge({ delta }) {
+  if (delta == null) return null;
+  const abs = Math.abs(delta);
+  if (abs < 5) return null;
+  const up = delta > 0;
+  // ≥5 neutral grey, ≥10 coloured
+  const strong = abs >= 10;
+  const color = strong ? (up ? "var(--critical)" : "var(--success, #22c55e)") : T.text3;
+  const bg    = strong ? (up ? "rgba(220,38,38,0.1)" : "rgba(34,197,94,0.1)") : alpha(T.text3, 8);
+  const border= strong ? (up ? "rgba(220,38,38,0.3)" : "rgba(34,197,94,0.3)") : alpha(T.text3, 20);
+  return (
+    <div style={{
+      display: "flex", alignItems: "center", gap: 4,
+      padding: "3px 10px", borderRadius: 6,
+      background: bg, border: `1px solid ${border}`,
+      fontFamily: T.font, fontSize: 12, fontWeight: 700, color,
+      flexShrink: 0,
+    }}>
+      {up ? "▲" : "▼"} {up ? "+" : ""}{delta}
+    </div>
+  );
+}
+
+const CHIP_THEMES = {
+  ok:      { border: "#22c55e", icon: "✓", color: "#22c55e",         bg: "rgba(34,197,94,0.05)" },
+  error:   { border: "var(--critical)", icon: "✗", color: "var(--critical)", bg: "rgba(220,38,38,0.05)" },
+  warning: { border: "#f59e0b", icon: "⚠", color: "#f59e0b",        bg: "rgba(245,158,11,0.05)" },
+  info:    { border: T.text3,   icon: "ⓘ", color: T.text3,           bg: T.bg2 },
+  neutral: { border: T.border,  icon: "—", color: T.text4,           bg: T.bg2 },
+};
+
+function ConsistencyChip({ label, status, text }) {
+  const theme = CHIP_THEMES[status] ?? CHIP_THEMES.neutral;
+  return (
+    <div style={{
+      display: "flex", alignItems: "flex-start", gap: 8,
+      padding: "8px 12px", borderRadius: 6, flex: 1, minWidth: 130,
+      background: theme.bg,
+      borderLeft: `3px solid ${theme.border}`,
+      border: `1px solid ${alpha(theme.border === T.border ? T.text4 : theme.border, 20)}`,
+      borderLeftWidth: 3,
+    }}>
+      <span style={{ fontFamily: T.font, fontSize: 12, color: theme.color, flexShrink: 0, marginTop: 1 }}>
+        {theme.icon}
+      </span>
+      <div>
+        <div style={{ fontFamily: T.font, fontSize: 10, fontWeight: 700, color: T.text2 }}>{label}</div>
+        <div style={{ fontFamily: T.fontSans, fontSize: 10, color: T.text3, marginTop: 2 }}>{text}</div>
+      </div>
+    </div>
+  );
+}
+
+function ConsistencyChecks({ findings, gs }) {
+  const hasFind = (code) => findings?.some(f => f.code === code);
+
+  const spfMxOk = !hasFind("MX_NOT_IN_SPF");
+  const mtaStsMxOk = !hasFind("MTA_STS_MX_NOT_COVERED");
+  const dkimOk = !hasFind("DKIM_MISSING_FOR_PROVIDER");
+  const ruaExternal = hasFind("DMARC_EXTERNAL_REPORTING");
+  const mtaConfigured = !!gs?.mta_sts_mode;
+
+  const missingProviders = gs?.dkim_missing_providers ?? [];
+  const ruaDomains = gs?.rua_external_domains ?? [];
+
+  return (
+    <div style={{
+      background: T.bg1, border: `1px solid ${T.border}`,
+      borderRadius: 10, padding: "14px 20px",
+    }}>
+      <div style={{ fontFamily: T.fontSans, fontSize: 11, fontWeight: 600, color: T.text3, marginBottom: 10, textTransform: "uppercase", letterSpacing: "0.05em" }}>
+        Konsistenz-Prüfungen
+      </div>
+      <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+        <ConsistencyChip
+          label="SPF↔MX"
+          status={spfMxOk ? "ok" : "error"}
+          text={spfMxOk ? "alle MX-IPs in SPF" : "MX-IPs nicht autorisiert"}
+        />
+        <ConsistencyChip
+          label="MTA-STS↔MX"
+          status={!mtaConfigured ? "neutral" : mtaStsMxOk ? "ok" : "warning"}
+          text={!mtaConfigured ? "nicht konfiguriert" : mtaStsMxOk ? "Policy aktuell" : "MX-Server fehlen in Policy"}
+        />
+        <ConsistencyChip
+          label="Provider DKIM"
+          status={dkimOk ? "ok" : "warning"}
+          text={dkimOk
+            ? "alle Provider konfiguriert"
+            : missingProviders.length > 0
+              ? `${missingProviders[0]}${missingProviders.length > 1 ? ` +${missingProviders.length - 1}` : ""} fehlt`
+              : "DKIM-Selector fehlt"}
+        />
+        <ConsistencyChip
+          label="rua= Empfänger"
+          status={ruaExternal ? "info" : "ok"}
+          text={ruaExternal
+            ? ruaDomains.slice(0, 2).join(", ") + (ruaDomains.length > 2 ? " …" : "") + " (extern)"
+            : "intern / nicht gesetzt"}
+        />
+      </div>
+    </div>
+  );
+}
+
 const SEVERITY_COLORS = {
   CRITICAL: "var(--critical)",
   HIGH:     "var(--high)",
@@ -660,7 +765,8 @@ export default function EmailIntelPage() {
               )}
 
               {activeResult.status === "complete" && activeResult.risk_score != null && (
-                <div style={{ marginLeft: "auto" }}>
+                <div style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 8 }}>
+                  <ScoreDeltaBadge delta={gs?.score_delta} />
                   <EmailRiskBadge score={activeResult.risk_score} band={activeResult.risk_band} />
                 </div>
               )}
@@ -678,7 +784,13 @@ export default function EmailIntelPage() {
                 <SummaryCard
                   label="DKIM"
                   value={gs.dkim_selectors_found > 0 ? `${gs.dkim_selectors_found} Sel.` : "—"}
-                  sub={gs.dkim_weak_keys > 0 ? `${gs.dkim_weak_keys} schwach` : gs.dkim_selectors_found > 0 ? "OK" : "nicht gefunden"}
+                  sub={
+                    gs.dkim_weak_keys > 0
+                      ? `${gs.dkim_weak_keys} schwach`
+                      : gs.dkim_missing_providers?.length > 0
+                        ? `⚠ ${gs.dkim_missing_providers[0]}${gs.dkim_missing_providers.length > 1 ? " +mehr" : ""} fehlt`
+                        : gs.dkim_selectors_found > 0 ? "OK" : "nicht gefunden"
+                  }
                   warn={gs.dkim_weak_keys > 0}
                 />
                 <SummaryCard
@@ -699,6 +811,11 @@ export default function EmailIntelPage() {
                   sub={gs.dnssec_signed ? "signiert" : "nicht signiert"}
                 />
               </div>
+            )}
+
+            {/* Consistency checks */}
+            {activeResult.status === "complete" && (
+              <ConsistencyChecks findings={activeResult.findings} gs={gs} />
             )}
 
             {/* Score history chart */}
@@ -727,6 +844,19 @@ export default function EmailIntelPage() {
                     <code style={{ fontFamily: T.font, fontSize: 10, color: "#f59e0b", wordBreak: "break-all" }}>
                       {activeResult.dmarc_raw}
                     </code>
+                    {gs?.rua_external_domains?.length > 0 && (
+                      <div style={{
+                        display: "flex", alignItems: "center", gap: 6, marginTop: 6,
+                        padding: "5px 8px", borderRadius: 4,
+                        background: alpha(T.text3, 8), border: `1px solid ${alpha(T.text3, 15)}`,
+                      }}>
+                        <span style={{ fontFamily: T.font, fontSize: 10, color: T.text3 }}>ⓘ</span>
+                        <span style={{ fontFamily: T.fontSans, fontSize: 10, color: T.text3 }}>
+                          Aggregate-Reports an externe Domain(s):&nbsp;
+                          <strong>{gs.rua_external_domains.join(", ")}</strong>
+                        </span>
+                      </div>
+                    )}
                   </div>
                 )}
               </div>
@@ -776,21 +906,36 @@ export default function EmailIntelPage() {
                 <table style={{ width: "100%", borderCollapse: "collapse" }}>
                   <thead>
                     <tr style={{ borderBottom: `1px solid ${T.border}` }}>
-                      {["Priorität", "FQDN", "IPs"].map(h => (
+                      {["Priorität", "FQDN", "IPs", "SPF", "MTA-STS"].map(h => (
                         <th key={h} style={{ padding: "6px 12px", textAlign: "left", fontFamily: T.fontSans, fontSize: 10, color: T.text4, textTransform: "uppercase" }}>{h}</th>
                       ))}
                     </tr>
                   </thead>
                   <tbody>
-                    {activeResult.mx_records.map(mx => (
-                      <tr key={mx.fqdn} style={{ borderBottom: `1px solid ${T.border}` }}>
-                        <td style={{ padding: "8px 12px", fontFamily: T.font, fontSize: 11, color: T.text3 }}>{mx.priority}</td>
-                        <td style={{ padding: "8px 12px", fontFamily: T.font, fontSize: 11, color: T.text1 }}>{mx.fqdn}</td>
-                        <td style={{ padding: "8px 12px", fontFamily: T.font, fontSize: 10, color: T.text3 }}>
-                          {(mx.ips || []).map(ip => ip.address).join(", ") || "—"}
-                        </td>
-                      </tr>
-                    ))}
+                    {activeResult.mx_records.map(mx => {
+                      const allSpfOk = (mx.ips || []).every(ip => ip.spf_covered !== false);
+                      const mtaOk = mx.mta_sts_covered;
+                      const mtaConfigured = !!gs?.mta_sts_mode;
+                      return (
+                        <tr key={mx.fqdn} style={{ borderBottom: `1px solid ${T.border}` }}>
+                          <td style={{ padding: "8px 12px", fontFamily: T.font, fontSize: 11, color: T.text3 }}>{mx.priority}</td>
+                          <td style={{ padding: "8px 12px", fontFamily: T.font, fontSize: 11, color: T.text1 }}>{mx.fqdn}</td>
+                          <td style={{ padding: "8px 12px", fontFamily: T.font, fontSize: 10, color: T.text3 }}>
+                            {(mx.ips || []).map(ip => (
+                              <span key={ip.address} style={{ color: ip.spf_covered === false ? "var(--critical)" : "inherit", marginRight: 6 }}>
+                                {ip.spf_covered === false ? "✗ " : ""}{ip.address}
+                              </span>
+                            ))}
+                          </td>
+                          <td style={{ padding: "8px 12px", fontFamily: T.font, fontSize: 12, fontWeight: 700, color: allSpfOk ? "#22c55e" : "var(--critical)" }}>
+                            {allSpfOk ? "✓" : "✗"}
+                          </td>
+                          <td style={{ padding: "8px 12px", fontFamily: T.font, fontSize: 12, fontWeight: 700, color: !mtaConfigured ? T.text4 : mtaOk ? "#22c55e" : "#f59e0b" }}>
+                            {!mtaConfigured ? "—" : mtaOk ? "✓" : "✗"}
+                          </td>
+                        </tr>
+                      );
+                    })}
                   </tbody>
                 </table>
               </div>

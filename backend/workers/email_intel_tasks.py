@@ -16,6 +16,7 @@ from celery.signals import worker_ready
 from datetime import datetime, timezone
 
 from easm_email.job_status import JobStatus
+from easm_email.models import EmailFinding
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
@@ -71,6 +72,19 @@ def _init_neo4j_schema(**kwargs):
 
 def _db_conn():
     return psycopg2.connect(os.getenv("DATABASE_URL", ""))
+
+
+def _get_previous_score(conn, tenant_id: str, domain: str, current_job_id: str) -> int | None:
+    """Return the risk_score of the most recent completed scan before the current job."""
+    with conn.cursor() as cur:
+        cur.execute("""
+            SELECT risk_score FROM email_intel_jobs
+            WHERE tenant_id = %s AND domain = %s
+              AND status = 'complete' AND id != %s AND risk_score IS NOT NULL
+            ORDER BY completed_at DESC LIMIT 1
+        """, (tenant_id, domain, current_job_id))
+        row = cur.fetchone()
+    return row[0] if row else None
 
 
 def _update_job(conn, job_id: str, **fields) -> None:
@@ -185,7 +199,32 @@ def email_intel_analyze(self, job_id: str, domain: str, tenant_id: str):
                             dkim_results=dkim_results,
                             rbl_hits=rbl_hits,
                             mta_sts=mta_sts,
-                            dnssec_signed=bundle.dnssec_signed)
+                            dnssec_signed=bundle.dnssec_signed,
+                            domain=domain)
+
+        # ── Step 11: Score delta (non-fatal, requires completed prev scan) ─
+        prev_score = _get_previous_score(conn, tenant_id, domain, job_id)
+        if prev_score is not None:
+            delta = result.score - prev_score
+            result.score_delta = delta  # stored for summary_json
+            if delta >= 10:
+                sev = "HIGH" if delta >= 20 else "MEDIUM"
+                result.findings.insert(0, EmailFinding(
+                    code="SCORE_REGRESSION",
+                    severity=sev,
+                    title=f"Score verschlechtert: {prev_score} → {result.score} (+{delta})",
+                    detail=f"Der Risiko-Score hat sich gegenüber der letzten Analyse "
+                           f"um {delta} Punkte erhöht.",
+                    remediation="Prüfen Sie die neuen Findings und beheben Sie die kritischsten zuerst.",
+                ))
+            elif delta <= -10:
+                result.findings.insert(0, EmailFinding(
+                    code="SCORE_IMPROVED",
+                    severity="INFO",
+                    title=f"Score verbessert: {prev_score} → {result.score} ({delta})",
+                    detail=f"Der Risiko-Score hat sich um {abs(delta)} Punkte verbessert.",
+                    remediation="",
+                ))
 
         findings_json = json.dumps([
             {
@@ -208,8 +247,13 @@ def email_intel_analyze(self, job_id: str, domain: str, tenant_id: str):
             "mta_sts_mode": mta_sts.mode if mta_sts else None,
             "tls_rpt_present": mta_sts.tls_rpt_present if mta_sts else False,
             "dnssec_signed": bundle.dnssec_signed,
+            "score_delta": getattr(result, "score_delta", None),
+            "dkim_missing_providers": result.dkim_missing_providers,
+            "rua_external_domains": result.rua_external_domains,
         })
         enriched_by_addr = {e.address: e for e in enriched_ips}
+        _spf_uncovered_set = set(result.spf_uncovered_ips)
+        _mta_sts_uncovered_set = set(result.mta_sts_uncovered_fqdns)
 
         def _ip_dict(ip) -> dict:
             e = enriched_by_addr.get(ip.address)
@@ -221,10 +265,16 @@ def email_intel_analyze(self, job_id: str, domain: str, tenant_id: str):
                 "provider_category": e.provider_category if e else "unknown",
                 "asn": ({"number": e.asn.number, "name": e.asn.name, "country": e.asn.country}
                         if e and e.asn else None),
+                "spf_covered": ip.address not in _spf_uncovered_set,
             }
 
         mx_json = json.dumps([
-            {"fqdn": mx.fqdn, "priority": mx.priority, "ips": [_ip_dict(ip) for ip in mx.ips]}
+            {
+                "fqdn": mx.fqdn,
+                "priority": mx.priority,
+                "mta_sts_covered": mx.fqdn not in _mta_sts_uncovered_set,
+                "ips": [_ip_dict(ip) for ip in mx.ips],
+            }
             for mx in mx_servers
         ])
 
