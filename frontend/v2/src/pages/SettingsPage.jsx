@@ -168,6 +168,8 @@ export default function SettingsPage() {
         abuseipdb:      s.abuseipdb      ?? "",
         alienvault_otx: s.alienvault_otx ?? "",
         spyonweb:       s.spyonweb       ?? "",
+        virustotal:     s.virustotal     ?? "",
+        shodan:         s.shodan         ?? "",
       });
       setNotif({
         slack_webhook: s.slack_webhook ?? "",
@@ -523,12 +525,49 @@ export default function SettingsPage() {
                 onChange={fieldSetter(setIntel)}
                 placeholder="SpyOnWeb API-Key…"
               />
+              <ApiKeyField
+                label="VirusTotal"
+                fieldKey="virustotal"
+                value={intel.virustotal}
+                onChange={fieldSetter(setIntel)}
+                placeholder="VirusTotal API-Key…"
+              />
+              <ApiKeyField
+                label="Shodan"
+                fieldKey="shodan"
+                value={intel.shodan}
+                onChange={fieldSetter(setIntel)}
+                placeholder="Shodan API-Key…"
+              />
             </div>
             <div style={{
               fontFamily: T.fontSans, fontSize: 11, color: T.text4,
               padding: "6px 10px", background: T.bg3, borderRadius: 5, border: `1px solid ${T.border}`,
             }}>
               API-Keys werden verschlüsselt in der Datenbank gespeichert und nur für Scan-Jobs genutzt.
+            </div>
+            {/* Free feeds — always active, no key required */}
+            <div style={{
+              padding: "10px 12px", background: T.bg3, borderRadius: 6,
+              border: `1px solid ${T.border}`, display: "flex", flexDirection: "column", gap: 6,
+            }}>
+              <div style={{ fontFamily: T.fontSans, fontSize: 11, fontWeight: 600, color: T.text2, marginBottom: 2 }}>
+                Kostenlose Feeds (immer aktiv)
+              </div>
+              {[
+                { name: "URLhaus", desc: "Malicious URL database by abuse.ch" },
+                { name: "Feodo Tracker", desc: "C2 botnet tracker by abuse.ch" },
+              ].map(f => (
+                <div key={f.name} style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                  <span style={{
+                    fontFamily: T.font, fontSize: 8, color: T.accent,
+                    background: T.accent3, border: `1px solid ${alpha(T.accent, 25)}`,
+                    padding: "0 5px", borderRadius: 3, flexShrink: 0,
+                  }}>FREE</span>
+                  <span style={{ fontFamily: T.fontSans, fontSize: 11, color: T.text1, fontWeight: 600 }}>{f.name}</span>
+                  <span style={{ fontFamily: T.fontSans, fontSize: 11, color: T.text3 }}>— {f.desc}</span>
+                </div>
+              ))}
             </div>
           </IntegrationGroup>
 

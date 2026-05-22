@@ -25,6 +25,7 @@ flower==2.0.1
 dnspython==2.6.1
 sslyze==6.1.0
 ipwhois==1.3.0
+dnstwist==20240812
 
 # ── HTTP / Requests ────────────────────────────────────────────
 aiohttp==3.9.5

@@ -55,6 +55,7 @@ class PipelineConfig:
     run_nuclei: bool = True
     run_ramparts: bool = True
     run_mcp_scan: bool = True
+    run_dnstwist: bool = True
 
     # Subfinder
     subfinder_recursive: bool = False
@@ -72,9 +73,14 @@ class PipelineConfig:
     httpx_screenshots: bool = True
     httpx_threads: int = 50
 
-    # Nuclei — tags must match NucleiAdapter.run() fallback; "default-logins" (plural)
-    # is the actual nuclei template folder/tag name (not "default-login")
-    nuclei_tags: str = "api,exposure,misconfig,default-logins,mcp,cve,tech"
+    # Nuclei template tags. "default-logins" (plural) is the actual template folder/tag
+    # name (not "default-login"). Added web-vuln tags (xss, sqli, ssrf, lfi, rce,
+    # redirect, takeover) so real application vulnerabilities are detected — not just
+    # misconfigs and CVEs.
+    nuclei_tags: str = (
+        "api,exposure,misconfig,default-logins,mcp,cve,tech,"
+        "xss,sqli,ssrf,lfi,rce,redirect,takeover"
+    )
     nuclei_severity: str = "low,medium,high,critical"
     nuclei_rate: int = 100
 
@@ -109,6 +115,7 @@ class PipelineReport:
     findings_httpx: list = field(default_factory=list)
     findings_nuclei: list = field(default_factory=list)
     findings_ramparts: list = field(default_factory=list)
+    findings_dnstwist: list = field(default_factory=list)
 
     # Aggregiert + dedupliziert
     all_findings: list = field(default_factory=list)
@@ -230,7 +237,16 @@ class EASMPipeline:
 
         # ── Phase 5: Vulnerability-Scan (Nuclei) ──────────────────────────────
         self._log("pipeline", "Phase 5/6: Vulnerability-Scanning (Nuclei)", "info")
-        vuln_targets = list(set(http_targets + mcp_hosts))
+        # Prefer HTTPX-discovered live URLs over the raw pre-probing target list.
+        # HTTPX already determined which hosts respond and on which scheme/port,
+        # so Nuclei doesn't need to re-probe and discard unresponsive hosts.
+        live_urls = sorted({
+            f.affected_asset for f in report.findings_httpx
+            if f.affected_asset and f.affected_asset.startswith(("http://", "https://"))
+        })
+        vuln_targets = list(set((live_urls if live_urls else http_targets) + mcp_hosts))
+        if live_urls:
+            self._log("nuclei", f"{len(live_urls)} live URLs von HTTPX → Nuclei-Targets", "info")
         self._phase_vulnscan(report, vuln_targets, mcp_hosts)
         self._log("pipeline", f"Phase 5 done: {len(report.findings_nuclei)} Nuclei-Findings", "info")
         _notify("vuln", 70)
@@ -244,7 +260,18 @@ class EASMPipeline:
             self._log("pipeline", f"Phase 6 done: {len(report.findings_ramparts)} MCP-Findings", "info")
         else:
             self._log("pipeline", "Phase 6/6: MCP-Analyse übersprungen", "info")
-        _notify("mcp", 88)
+        _notify("mcp", 85)
+
+        # ── Phase 7: Typosquatting (dnstwist) ────────────────────────────────
+        if self.config.run_dnstwist and domain:
+            self._log("pipeline", "Phase 7/7: Typosquatting-Check (dnstwist)", "info")
+            self._phase_dnstwist(report, domain)
+            self._log("pipeline",
+                      f"Phase 7 done: {len(report.findings_dnstwist)} Lookalike-Domains",
+                      "info")
+        else:
+            self._log("pipeline", "Phase 7/7: Typosquatting übersprungen", "info")
+        _notify("dnstwist", 92)
 
         # ── Aggregation + Deduplication ───────────────────────────────────────
         self._log("pipeline", "Aggregation: Deduplizierung & Risk-Scoring", "info")
@@ -547,6 +574,18 @@ class EASMPipeline:
         except Exception as e:
             self._log("ramparts", f"Phase-Fehler: {e}", "error")
 
+    def _phase_dnstwist(self, report: PipelineReport, domain: str) -> None:
+        """Phase 7: dnstwist lookalike-domain detection for the root domain."""
+        from easm.dnstwist_adapter import run as _dnstwist_run  # noqa: PLC0415
+        try:
+            findings = _dnstwist_run(
+                self.tenant_id, domain,
+                timeout=self.config.timeout_phase,
+            )
+            report.findings_dnstwist = findings
+        except Exception as exc:
+            self._log("dnstwist", f"Phase-Fehler: {exc}", "error")
+
     def _aggregate(self, report: PipelineReport):
         """Alle Findings deduplizieren, priorisieren, Risk-Score berechnen"""
         all_findings = (
@@ -556,7 +595,8 @@ class EASMPipeline:
             report.findings_sslyze +
             report.findings_httpx +
             report.findings_nuclei +
-            report.findings_ramparts
+            report.findings_ramparts +
+            report.findings_dnstwist
         )
 
         # Deduplizierung via Fingerprint
@@ -602,13 +642,11 @@ class EASMPipeline:
             },
             "by_tool": {
                 tool: sum(1 for f in unique if f.tool == tool)
-                for tool in ["subfinder", "naabu", "theharvester",
-                             "sslyze", "httpx", "nuclei", "ramparts"]
+                for tool in sorted({f.tool for f in unique})
             },
             "by_category": {
                 cat: sum(1 for f in unique if f.category == cat)
-                for cat in ["subdomain", "port", "email", "http",
-                            "vulnerability", "mcp_exposure", "cve", "osint"]
+                for cat in sorted({f.category for f in unique})
             },
             "subdomains_found": len(report.subdomains_discovered),
             "emails_found": len(report.emails_harvested),

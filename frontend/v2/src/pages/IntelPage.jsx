@@ -1,27 +1,14 @@
 import { useState, useCallback } from "react";
 import { useParams, useNavigate } from "react-router-dom";
-import { Search, Shield, Mail, Settings2, AlertTriangle, CheckCircle, Eye, EyeOff } from "lucide-react";
+import { Search, Shield, Mail, AlertTriangle, CheckCircle } from "lucide-react";
 import { T, alpha } from "../theme";
 import { Card, CardHeader, EmptyState, Btn } from "../components/ui/index";
 import { apiFetch } from "../api/client";
 import { useApp } from "../context/AppContext";
-import { toast } from "sonner";
 
 const TABS = [
-  { id: "ip-reputation", label: "IP Reputation",  Icon: Shield   },
-  { id: "breaches",      label: "Breaches (HIBP)", Icon: Mail     },
-  { id: "feed-settings", label: "Feed Settings",   Icon: Settings2},
-];
-
-const DEFAULT_FEEDS = [
-  { id: "abuseipdb",    name: "AbuseIPDB",      description: "IP reputation & abuse reports", requiresKey: true,  enabled: false, key: "" },
-  { id: "virustotal",   name: "VirusTotal",     description: "Multi-AV & URL scanner",        requiresKey: true,  enabled: false, key: "" },
-  { id: "shodan",       name: "Shodan",         description: "Internet-wide port scanner",     requiresKey: true,  enabled: false, key: "" },
-  { id: "hibp",         name: "HaveIBeenPwned", description: "Breach notification service",   requiresKey: true,  enabled: false, key: "" },
-  { id: "otx",          name: "AlienVault OTX", description: "Open threat exchange",          requiresKey: true,  enabled: false, key: "" },
-  { id: "greynoise",    name: "GreyNoise",      description: "Noise & benign scanner filter",  requiresKey: true,  enabled: false, key: "" },
-  { id: "urlhaus",      name: "URLhaus",        description: "Malicious URL feed (free)",      requiresKey: false, enabled: true,  key: "" },
-  { id: "feodo",        name: "Feodo Tracker",  description: "C2 botnet tracker (free)",       requiresKey: false, enabled: true,  key: "" },
+  { id: "ip-reputation", label: "IP Reputation",  Icon: Shield },
+  { id: "breaches",      label: "Breaches (HIBP)", Icon: Mail   },
 ];
 
 export default function IntelPage() {
@@ -39,7 +26,13 @@ export default function IntelPage() {
           Intelligence
         </div>
         <div style={{ fontFamily: T.fontSans, fontSize: 12, color: T.text3 }}>
-          IP Reputation, Breach-Daten und Threat-Feed-Konfiguration
+          IP Reputation & Breach-Daten — API-Keys unter{" "}
+          <span
+            onClick={() => navigate("/settings")}
+            style={{ color: T.accent, cursor: "pointer", textDecoration: "underline" }}
+          >
+            Einstellungen → Integrationen
+          </span>
         </div>
       </div>
 
@@ -64,7 +57,6 @@ export default function IntelPage() {
 
       {activeTab === "ip-reputation" && <IpReputationTab />}
       {activeTab === "breaches"      && <BreachesTab />}
-      {activeTab === "feed-settings" && <FeedSettingsTab />}
     </div>
   );
 }
@@ -86,7 +78,7 @@ function IpReputationTab() {
       setResult(data);
     } catch (e) {
       if (e.message?.includes("404") || e.message?.includes("Method Not Allowed") || e.message?.includes("405")) {
-        setError("Dieser Endpunkt ist noch nicht im Backend implementiert. Bitte API-Keys in den Feed Settings konfigurieren.");
+        setError("Dieser Endpunkt ist noch nicht im Backend implementiert. API-Keys unter Einstellungen → Integrationen konfigurieren.");
       } else {
         setError(e.message);
       }
@@ -284,7 +276,7 @@ function BreachesTab() {
       setResult(data);
     } catch (e) {
       if (e.message?.includes("404") || e.message?.includes("Method Not Allowed") || e.message?.includes("405")) {
-        setError("HIBP-Endpunkt noch nicht implementiert. Bitte HIBP API-Key in den Feed Settings hinterlegen.");
+        setError("HIBP-Endpunkt noch nicht implementiert. HIBP API-Key unter Einstellungen → Integrationen hinterlegen.");
       } else {
         setError(e.message);
       }
@@ -301,7 +293,7 @@ function BreachesTab() {
             E-Mail auf Datenpannen prüfen
           </div>
           <div style={{ fontFamily: T.fontSans, fontSize: 11, color: T.text3, marginBottom: 12 }}>
-            Powered by HaveIBeenPwned — API-Key erforderlich (Feed Settings)
+            Powered by HaveIBeenPwned — API-Key unter Einstellungen → Integrationen erforderlich
           </div>
           <div style={{ display: "flex", gap: 8 }}>
             <input
@@ -409,147 +401,3 @@ function BreachCard({ breach }) {
   );
 }
 
-/* ── Feed Settings ── */
-function FeedSettingsTab() {
-  const { tenantId } = useApp();
-  const [feeds, setFeeds] = useState(DEFAULT_FEEDS);
-  const [saving, setSaving] = useState(null);
-  const [showKey, setShowKey] = useState({});
-
-  const toggle = async (id) => {
-    const feed = feeds.find(f => f.id === id);
-    const next = !feed.enabled;
-    setFeeds(fs => fs.map(f => f.id === id ? { ...f, enabled: next } : f));
-    setSaving(id);
-    try {
-      await apiFetch(`/tenants/${tenantId}/intel/feeds/${id}`, {
-        method: "PATCH", body: { enabled: next },
-      });
-    } catch (e) {
-      if (!e.message?.includes("404") && !e.message?.includes("405")) {
-        setFeeds(fs => fs.map(f => f.id === id ? { ...f, enabled: feed.enabled } : f));
-        toast.error("Fehler beim Speichern", { description: e.message });
-      }
-      // 404/405 = backend not yet implemented; optimistic state stays
-    } finally {
-      setSaving(null);
-    }
-  };
-
-  const saveKey = async (id, key) => {
-    setSaving(id);
-    try {
-      await apiFetch(`/tenants/${tenantId}/intel/feeds/${id}`, {
-        method: "PATCH", body: { api_key: key },
-      });
-      toast.success("API-Key gespeichert");
-    } catch (e) {
-      if (e.message?.includes("404") || e.message?.includes("405")) {
-        toast.info("Feed-Endpunkt noch nicht verfügbar", { description: "Wird gespeichert sobald das Backend den Endpunkt bereitstellt." });
-      } else {
-        toast.error("Fehler", { description: e.message });
-      }
-    } finally {
-      setSaving(null);
-    }
-  };
-
-  const updateKey = (id, key) => setFeeds(fs => fs.map(f => f.id === id ? { ...f, key } : f));
-
-  return (
-    <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-      <Card>
-        <CardHeader title="Threat-Feed-Konfiguration" sub="API-Keys und Aktivierungsstatus der integrierten Threat Feeds" />
-        <div>
-          {feeds.map((feed, i) => (
-            <div key={feed.id} style={{
-              display: "flex", alignItems: "center", gap: 16,
-              padding: "16px 20px",
-              borderBottom: i < feeds.length - 1 ? `1px solid ${T.border}` : "none",
-              transition: "background 0.1s",
-            }}
-              onMouseEnter={e => e.currentTarget.style.background = T.bg3}
-              onMouseLeave={e => e.currentTarget.style.background = "transparent"}
-            >
-              {/* Toggle */}
-              <button
-                onClick={() => toggle(feed.id)}
-                disabled={saving === feed.id}
-                style={{
-                  width: 36, height: 20, borderRadius: 10, border: "none", cursor: "pointer",
-                  background: feed.enabled ? T.accent : T.bg4,
-                  position: "relative", transition: "background 0.2s", flexShrink: 0,
-                  opacity: saving === feed.id ? 0.6 : 1,
-                }}
-              >
-                <div style={{
-                  position: "absolute", top: 2,
-                  left: feed.enabled ? 18 : 2,
-                  width: 16, height: 16, borderRadius: "50%",
-                  background: feed.enabled ? "var(--background)" : T.border2,
-                  transition: "left 0.15s",
-                }} />
-              </button>
-
-              {/* Info */}
-              <div style={{ flex: 1, minWidth: 0 }}>
-                <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 2 }}>
-                  <span style={{ fontFamily: T.fontSans, fontSize: 13, fontWeight: 600, color: T.text0 }}>
-                    {feed.name}
-                  </span>
-                  {!feed.requiresKey && (
-                    <span style={{
-                      fontFamily: T.font, fontSize: 8, color: T.accent,
-                      background: T.accent3, border: `1px solid ${alpha(T.accent, 25)}`,
-                      padding: "0 5px", borderRadius: 3,
-                    }}>FREE</span>
-                  )}
-                </div>
-                <div style={{ fontFamily: T.fontSans, fontSize: 11, color: T.text3 }}>
-                  {feed.description}
-                </div>
-              </div>
-
-              {/* API Key input */}
-              {feed.requiresKey && (
-                <div style={{ display: "flex", gap: 6, alignItems: "center", flexShrink: 0 }}>
-                  <div style={{ position: "relative" }}>
-                    <input
-                      type={showKey[feed.id] ? "text" : "password"}
-                      value={feed.key}
-                      onChange={e => updateKey(feed.id, e.target.value)}
-                      placeholder="API-Key eingeben…"
-                      style={{
-                        width: 220, padding: "7px 32px 7px 10px",
-                        background: T.bg3, border: `1px solid ${T.border}`,
-                        borderRadius: 6, fontFamily: T.font, fontSize: 11, color: T.text0,
-                        outline: "none",
-                      }}
-                    />
-                    <button
-                      onClick={() => setShowKey(s => ({ ...s, [feed.id]: !s[feed.id] }))}
-                      style={{
-                        position: "absolute", right: 8, top: "50%", transform: "translateY(-50%)",
-                        background: "none", border: "none", color: T.text3, cursor: "pointer",
-                        display: "flex", alignItems: "center",
-                      }}
-                    >
-                      {showKey[feed.id] ? <EyeOff size={12} /> : <Eye size={12} />}
-                    </button>
-                  </div>
-                  <Btn
-                    onClick={() => saveKey(feed.id, feed.key)}
-                    variant="secondary"
-                    disabled={saving === feed.id || !feed.key.trim()}
-                  >
-                    {saving === feed.id ? "…" : "Speichern"}
-                  </Btn>
-                </div>
-              )}
-            </div>
-          ))}
-        </div>
-      </Card>
-    </div>
-  );
-}

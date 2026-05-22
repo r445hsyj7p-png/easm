@@ -299,6 +299,8 @@ export default function EmailIntelPage() {
   const [page, setPage]         = useState(0);
   const [activeResult, setActiveResult] = useState(null);
   const [polling, setPolling]   = useState(null);
+  const [pollError, setPollError]   = useState(null);
+  const [pollStartedAt, setPollStartedAt] = useState(null);
   const [history, setHistory]   = useState([]);
   const [settings, setSettings] = useState({ auto_rescan_enabled: false, rescan_interval_days: 7 });
   const [showSettings, setShowSettings] = useState(false);
@@ -308,7 +310,15 @@ export default function EmailIntelPage() {
   const [analyzeError, setAnalyzeError] = useState(null);
   const [bulkAnalyzing, setBulkAnalyzing] = useState(false);
   const [bulkResults, setBulkResults] = useState([]);
+  const [now, setNow] = useState(Date.now());
   const pollRef = useRef(null);
+
+  // Tick every 5 s while polling so timeout banner appears without extra state
+  useEffect(() => {
+    if (!polling) return;
+    const t = setInterval(() => setNow(Date.now()), 5000);
+    return () => clearInterval(t);
+  }, [polling]);
 
   const base = `/tenants/${tenantId}/email-intel`;
 
@@ -350,10 +360,15 @@ export default function EmailIntelPage() {
     if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null; }
     if (!polling) return;
     let mounted = true;
+    let consecutiveErrors = 0;
+    setPollError(null);
+    setPollStartedAt(Date.now());
     pollRef.current = setInterval(async () => {
       try {
         const result = await apiFetch(`${base}/result/${polling}`);
         if (!mounted) return;
+        consecutiveErrors = 0;
+        setPollError(null);
         const done = result.status === "complete" || result.status === "failed";
         setActiveResult(prev => {
           if (!done && prev?.status === result.status) return prev;
@@ -362,16 +377,21 @@ export default function EmailIntelPage() {
         if (done) {
           setPolling(null);
           setAnalyzing(false);
+          setPollStartedAt(null);
           loadDomains();
           if (result.status === "complete") {
             toast.success(`Analyse abgeschlossen: ${result.domain}`, {
               description: `Score ${result.risk_score} · ${result.risk_band}`,
             });
-          } else {
-            toast.error("Analyse fehlgeschlagen", { description: result.error });
           }
         }
-      } catch { /* silent */ }
+      } catch (e) {
+        if (!mounted) return;
+        consecutiveErrors++;
+        if (consecutiveErrors >= 3) {
+          setPollError(e.message);
+        }
+      }
     }, 2500);
     return () => { mounted = false; clearInterval(pollRef.current); pollRef.current = null; };
   }, [polling, base, loadDomains]);
@@ -381,6 +401,8 @@ export default function EmailIntelPage() {
     if (!d) return;
     setAnalyzing(true);
     setAnalyzeError(null);
+    setPollError(null);
+    setPollStartedAt(null);
     try {
       const resp = await apiFetch(`${base}/analyze`, { method: "POST", body: { domain: d } });
       setPolling(resp.job_id);
@@ -772,26 +794,72 @@ export default function EmailIntelPage() {
                 </div>
                 <div style={{ fontFamily: T.fontSans, fontSize: 10, color: T.text4, marginTop: 2 }}>
                   {getStatusText()}
+                  {activeResult.created_at && (
+                    <span style={{ marginLeft: 8, opacity: 0.7 }}>
+                      · gestartet {new Date(activeResult.created_at).toLocaleString("de-DE")}
+                    </span>
+                  )}
                 </div>
               </div>
 
-              {isRunning && (
-                <div style={{ display: "flex", alignItems: "center", gap: 6, color: T.text3 }}>
-                  <RefreshCw size={14} style={{ animation: "spin 1s linear infinite" }} />
-                  <span style={{ fontFamily: T.fontSans, fontSize: 11 }}>DNS-Analyse läuft…</span>
+              {isRunning && !pollError && (
+                <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 4 }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: 6, color: T.text3 }}>
+                    <RefreshCw size={14} style={{ animation: "spin 1s linear infinite" }} />
+                    <span style={{ fontFamily: T.fontSans, fontSize: 11 }}>DNS-Analyse läuft…</span>
+                  </div>
+                  {pollStartedAt && now - pollStartedAt > 90_000 && (
+                    <div style={{
+                      display: "flex", alignItems: "center", gap: 5,
+                      background: "color-mix(in srgb, var(--warning,#f59e0b) 12%, transparent)",
+                      border: "1px solid color-mix(in srgb, var(--warning,#f59e0b) 30%, transparent)",
+                      borderRadius: 5, padding: "4px 8px",
+                    }}>
+                      <AlertTriangle size={11} color="var(--warning,#f59e0b)" />
+                      <span style={{ fontFamily: T.fontSans, fontSize: 10, color: "var(--warning,#f59e0b)" }}>
+                        Dauert länger als erwartet — läuft der Worker?
+                      </span>
+                    </div>
+                  )}
                 </div>
               )}
 
-              {activeResult.status === "failed" && activeResult.error && (
+              {isRunning && pollError && (
                 <div style={{
                   display: "flex", alignItems: "flex-start", gap: 8, marginLeft: "auto",
-                  background: "rgba(var(--critical-rgb,220,38,38),0.08)",
-                  border: "1px solid rgba(var(--critical-rgb,220,38,38),0.25)",
+                  background: "color-mix(in srgb, var(--critical) 8%, transparent)",
+                  border: "1px solid color-mix(in srgb, var(--critical) 25%, transparent)",
+                  borderRadius: 6, padding: "8px 12px", maxWidth: 380,
+                }}>
+                  <AlertTriangle size={13} color="var(--critical)" style={{ flexShrink: 0, marginTop: 1 }} />
+                  <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+                    <span style={{ fontFamily: T.fontSans, fontSize: 11, color: T.text1 }}>
+                      Ergebnis nicht abrufbar: {pollError}
+                    </span>
+                    <button
+                      onClick={() => { setPolling(null); setAnalyzing(false); setPollError(null); }}
+                      style={{
+                        alignSelf: "flex-start", background: "none", border: `1px solid ${T.border}`,
+                        borderRadius: 4, padding: "2px 8px", cursor: "pointer",
+                        fontFamily: T.fontSans, fontSize: 10, color: T.text3,
+                      }}
+                    >
+                      Abbrechen
+                    </button>
+                  </div>
+                </div>
+              )}
+
+              {(activeResult.status === "failed") && (
+                <div style={{
+                  display: "flex", alignItems: "flex-start", gap: 8, marginLeft: "auto",
+                  background: "color-mix(in srgb, var(--critical) 8%, transparent)",
+                  border: "1px solid color-mix(in srgb, var(--critical) 25%, transparent)",
                   borderRadius: 6, padding: "8px 12px", maxWidth: 420,
                 }}>
                   <AlertTriangle size={13} color="var(--critical)" style={{ flexShrink: 0, marginTop: 1 }} />
                   <span style={{ fontFamily: T.fontSans, fontSize: 11, color: T.text1, wordBreak: "break-word" }}>
-                    {activeResult.error}
+                    {activeResult.error || "Analyse fehlgeschlagen"}
                   </span>
                 </div>
               )}
@@ -808,6 +876,7 @@ export default function EmailIntelPage() {
             {gs && (
               <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
                 <SummaryCard label="SPF-Tiefe" value={gs.spf_depth} sub="include-Ebenen" />
+                <SummaryCard label="SPF-Includes" value={gs.spf_include_count} sub="verschachtelt" />
                 <SummaryCard label="DNS-Lookups" value={`${gs.spf_lookup_count}/10`} sub="RFC 7208" warn={gs.spf_lookup_count > 10} />
                 <SummaryCard label="Provider" value={gs.provider_count} />
                 <SummaryCard label="MX-Server" value={gs.mx_count} />
@@ -938,7 +1007,7 @@ export default function EmailIntelPage() {
                 <table style={{ width: "100%", borderCollapse: "collapse" }}>
                   <thead>
                     <tr style={{ borderBottom: `1px solid ${T.border}` }}>
-                      {["Priorität", "FQDN", "IPs", "SPF", "MTA-STS"].map(h => (
+                      {["Prio", "FQDN / IP", "Provider · ASN", "PTR", "SPF", "MTA-STS"].map(h => (
                         <th key={h} style={{ padding: "6px 12px", textAlign: "left", fontFamily: T.fontSans, fontSize: 10, color: T.text4, textTransform: "uppercase" }}>{h}</th>
                       ))}
                     </tr>
@@ -948,21 +1017,68 @@ export default function EmailIntelPage() {
                       const allSpfOk = (mx.ips || []).every(ip => ip.spf_covered !== false);
                       const mtaOk = mx.mta_sts_covered;
                       const mtaConfigured = !!gs?.mta_sts_mode;
+                      const ips = mx.ips || [];
                       return (
-                        <tr key={mx.fqdn} style={{ borderBottom: `1px solid ${T.border}` }}>
-                          <td style={{ padding: "8px 12px", fontFamily: T.font, fontSize: 11, color: T.text3 }}>{mx.priority}</td>
-                          <td style={{ padding: "8px 12px", fontFamily: T.font, fontSize: 11, color: T.text1 }}>{mx.fqdn}</td>
-                          <td style={{ padding: "8px 12px", fontFamily: T.font, fontSize: 10, color: T.text3 }}>
-                            {(mx.ips || []).map(ip => (
-                              <span key={ip.address} style={{ color: ip.spf_covered === false ? "var(--critical)" : "inherit", marginRight: 6 }}>
-                                {ip.spf_covered === false ? "✗ " : ""}{ip.address}
-                              </span>
+                        <tr key={mx.fqdn} style={{ borderBottom: `1px solid ${T.border}`, verticalAlign: "top" }}>
+                          {/* Prio */}
+                          <td style={{ padding: "10px 12px", fontFamily: T.font, fontSize: 11, color: T.text3, whiteSpace: "nowrap" }}>
+                            {mx.priority}
+                          </td>
+                          {/* FQDN + IPs */}
+                          <td style={{ padding: "10px 12px" }}>
+                            <div style={{ fontFamily: T.font, fontSize: 11, color: T.text1, marginBottom: ips.length ? 4 : 0 }}>
+                              {mx.fqdn}
+                            </div>
+                            {ips.map(ip => (
+                              <div key={ip.address} style={{ display: "flex", alignItems: "center", gap: 4, marginTop: 2 }}>
+                                <span style={{
+                                  fontFamily: T.font, fontSize: 9, padding: "1px 4px",
+                                  borderRadius: 3, border: `1px solid ${T.border}`,
+                                  color: T.text4, background: T.bg3, flexShrink: 0,
+                                }}>
+                                  {ip.version === 6 ? "IPv6" : "IPv4"}
+                                </span>
+                                <span style={{ fontFamily: T.font, fontSize: 10, color: ip.spf_covered === false ? "var(--critical)" : T.text3 }}>
+                                  {ip.spf_covered === false ? "✗ " : ""}{ip.address}
+                                </span>
+                              </div>
                             ))}
                           </td>
-                          <td style={{ padding: "8px 12px", fontFamily: T.font, fontSize: 12, fontWeight: 700, color: allSpfOk ? "#22c55e" : "var(--critical)" }}>
+                          {/* Provider · ASN */}
+                          <td style={{ padding: "10px 12px" }}>
+                            {ips.map(ip => (
+                              <div key={ip.address} style={{ marginTop: 2, lineHeight: 1.3 }}>
+                                {ip.provider_name && ip.provider_name !== "Unknown" ? (
+                                  <div style={{ fontFamily: T.fontSans, fontSize: 10, color: T.text2 }}>
+                                    {ip.provider_name}
+                                  </div>
+                                ) : null}
+                                {ip.asn ? (
+                                  <div style={{ fontFamily: T.font, fontSize: 9, color: T.text4 }}>
+                                    AS{ip.asn.number}
+                                    {ip.asn.name ? ` · ${ip.asn.name}` : ""}
+                                    {ip.asn.country ? ` (${ip.asn.country})` : ""}
+                                  </div>
+                                ) : (
+                                  <div style={{ fontFamily: T.font, fontSize: 9, color: T.text4 }}>—</div>
+                                )}
+                              </div>
+                            ))}
+                          </td>
+                          {/* PTR */}
+                          <td style={{ padding: "10px 12px" }}>
+                            {ips.map(ip => (
+                              <div key={ip.address} style={{ fontFamily: T.font, fontSize: 9, color: T.text4, marginTop: 2, maxWidth: 200, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={ip.ptr || ""}>
+                                {ip.ptr || <span style={{ color: T.text4, opacity: 0.5 }}>—</span>}
+                              </div>
+                            ))}
+                          </td>
+                          {/* SPF */}
+                          <td style={{ padding: "10px 12px", fontFamily: T.font, fontSize: 12, fontWeight: 700, color: allSpfOk ? "#22c55e" : "var(--critical)", whiteSpace: "nowrap" }}>
                             {allSpfOk ? "✓" : "✗"}
                           </td>
-                          <td style={{ padding: "8px 12px", fontFamily: T.font, fontSize: 12, fontWeight: 700, color: !mtaConfigured ? T.text4 : mtaOk ? "#22c55e" : "#f59e0b" }}>
+                          {/* MTA-STS */}
+                          <td style={{ padding: "10px 12px", fontFamily: T.font, fontSize: 12, fontWeight: 700, color: !mtaConfigured ? T.text4 : mtaOk ? "#22c55e" : "#f59e0b", whiteSpace: "nowrap" }}>
                             {!mtaConfigured ? "—" : mtaOk ? "✓" : "✗"}
                           </td>
                         </tr>

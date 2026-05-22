@@ -534,83 +534,6 @@ class CredentialLeakChecker:
         except Exception:
             return []
 
-
-# ─── Typosquatting Generator ────────────────────────────────────────────
-
-class TyposquatChecker:
-    """Generiert und prüft Typosquatting-Domains"""
-
-    def generate_typos(self, domain: str) -> list:
-        """Generiert typische Tippfehler-Varianten"""
-        parts = domain.split(".")
-        name = parts[0]
-        tld = ".".join(parts[1:]) if len(parts) > 1 else "de"
-
-        typos = set()
-
-        # 1. Char-Deletion
-        for i in range(len(name)):
-            typos.add(f"{name[:i]}{name[i+1:]}.{tld}")
-
-        # 2. Char-Duplication
-        for i in range(len(name)):
-            typos.add(f"{name[:i]}{name[i]}{name[i:]}.{tld}")
-
-        # 3. Adjacent Char Swap (QWERTY)
-        qwerty = {
-            "a": "sq", "b": "vn", "c": "xv", "d": "sf", "e": "wr",
-            "f": "dg", "g": "fh", "h": "gj", "i": "uo", "j": "hk",
-            "k": "jl", "l": "k", "m": "n", "n": "mb", "o": "ip",
-            "p": "o", "q": "a", "r": "et", "s": "ad", "t": "ry",
-            "u": "yi", "v": "cb", "w": "eq", "x": "zc", "y": "tu",
-            "z": "x"
-        }
-        for i, char in enumerate(name):
-            for replacement in qwerty.get(char, ""):
-                typos.add(f"{name[:i]}{replacement}{name[i+1:]}.{tld}")
-
-        # 4. TLD-Varianten
-        tld_variants = ["com", "net", "org", "de", "eu", "io", "co"]
-        for t in tld_variants:
-            if t != tld:
-                typos.add(f"{name}.{t}")
-
-        # 5. Homoglyph (visuell ähnliche Zeichen)
-        homoglyphs = {"0": "o", "1": "l", "l": "1", "i": "1", "rn": "m"}
-        for char, replacement in homoglyphs.items():
-            if char in name:
-                typos.add(f"{name.replace(char, replacement, 1)}.{tld}")
-
-        # Originaldomain entfernen
-        typos.discard(domain)
-        return list(typos)[:50]  # Max 50 für Performance
-
-    def check_typosquats(self, domain: str) -> list:
-        """Prüft ob Typosquat-Domains registriert und aktiv sind"""
-        typos = self.generate_typos(domain)
-        active = []
-
-        resolver = dns.resolver.Resolver()
-        resolver.nameservers = ["8.8.8.8", "1.1.1.1"]
-        resolver.timeout = 2
-        resolver.lifetime = 3
-
-        for typo in typos:
-            try:
-                answers = resolver.resolve(typo, "A")
-                ip = str(answers[0])
-                active.append({
-                    "domain": typo,
-                    "ip": ip,
-                    "risk": "HIGH",
-                    "reason": "Registriert und aktiv — mögliches Phishing/Impersonation"
-                })
-            except Exception:
-                pass
-
-        return active
-
-
 # ─── Risk Scorer ────────────────────────────────────────────────────────
 
 class RiskScorer:
@@ -736,7 +659,6 @@ class EASMScanner:
         self.ssl_analyzer = SSLAnalyzer()
         self.cve_matcher = CVEMatcher()
         self.leak_checker = CredentialLeakChecker()
-        self.typosquat = TyposquatChecker()
         self.scorer = RiskScorer()
 
     def scan(self,
@@ -827,16 +749,11 @@ class EASMScanner:
         print(f"      {len(leaks)} Datenpannen gefunden")
 
         # ── 5. Typosquatting ────────────────────────────────────────
-        if deep_scan:
-            print(f"[5/6] Typosquatting-Check für {domain}...")
-            typos = self.typosquat.check_typosquats(domain)
-            report.typosquat_domains = typos
-            print(f"      {len(typos)} aktive Typosquat-Domains")
-        else:
-            print(f"[5/6] Typosquatting übersprungen (deep_scan=False)")
-            # Schnelle Variante: nur 10 häufigste
-            quick_typos = self.typosquat.generate_typos(domain)[:10]
-            report.typosquat_domains = []
+        # Handled by EASMPipeline Phase 7 (dnstwist_adapter) when invoked
+        # through the Celery worker. EASMScanner.scan() is a legacy path used
+        # only for direct CLI invocations; typosquat findings are empty here.
+        print(f"[5/6] Typosquatting — wird durch EASMPipeline (dnstwist) abgedeckt")
+        report.typosquat_domains = []
 
         # ── 6. Risk Score berechnen ─────────────────────────────────
         print(f"[6/6] Risk Score berechnen...")

@@ -41,7 +41,7 @@ function fmtDatetime(started, finished) {
 }
 
 export default function ScansPage() {
-  const { scans: initialScans, loading, triggerScan, tenantId } = useApp();
+  const { scans: initialScans, loading, triggerScan, tenantId, refresh } = useApp();
   const [scans,    setScans]    = useState(null);
   const [scanning, setScanning] = useState(false);
   const [detail,   setDetail]   = useState(null);
@@ -63,17 +63,24 @@ export default function ScansPage() {
   // Poll while running/pending jobs exist
   useEffect(() => {
     const poll = async () => {
-      const hasRunning = (scansRef.current || []).some(
-        s => s.status === "running" || s.status === "pending"
-      );
-      if (!hasRunning) { clearInterval(intervalRef.current); intervalRef.current = null; return; }
+      const prevScans = scansRef.current || [];
+      const hadRunning = prevScans.some(s => s.status === "running" || s.status === "pending");
+      if (!hadRunning) { clearInterval(intervalRef.current); intervalRef.current = null; return; }
       try {
         const data = await apiFetch(`/tenants/${tenantId}/scans?limit=20`);
-        setScans(data.scans ?? data);
+        const freshScans = data.scans ?? data;
+        setScans(freshScans);
         // Refresh detail if it's for a running scan
         if (detail && ["running", "pending"].includes(detail.status)) {
           const fresh = await apiFetch(`/tenants/${tenantId}/scans/${detail.id}`);
           setDetail(fresh);
+        }
+        // When the last running/pending scan transitions to completed/failed,
+        // reload global state (assets, findings, intel) so other pages reflect
+        // the new scan's results without requiring a full page reload.
+        const nowRunning = freshScans.some(s => s.status === "running" || s.status === "pending");
+        if (hadRunning && !nowRunning) {
+          refresh();
         }
       } catch { /* ignore */ }
     };

@@ -358,6 +358,15 @@ def run_full_pipeline(self, tenant_id: str, config_dict: dict, request_id: str =
             _diag_log("ramparts",
                       f"{len(mcp_findings)} MCP-Findings",
                       "info" if not mcp_findings else "warn")
+        elif phase == "dnstwist":
+            twist_findings = getattr(report, "findings_dnstwist", [])
+            high = sum(1 for f in twist_findings if f.severity == "HIGH")
+            _diag_log(
+                "dnstwist",
+                f"{len(twist_findings)} Lookalike-Domains gefunden"
+                + (f" — {high} mit MX (Phishing-Risiko)" if high else ""),
+                "warn" if high else "info",
+            )
         elif phase == "aggregating":
             total = len(report.all_findings)
             _diag_log("pipeline",
@@ -1464,7 +1473,10 @@ def _save_report(tenant_id: str, job_id: str, report):
                          %s::inet, %s, %s,
                          '{}', 'LOW', ARRAY['subfinder'], FALSE, '[]',
                          NOW(), NOW())
-                    ON CONFLICT DO NOTHING
+                    ON CONFLICT (tenant_id, fqdn, ip) DO UPDATE SET
+                        org       = COALESCE(EXCLUDED.org,  assets.org),
+                        asn       = COALESCE(EXCLUDED.asn,  assets.asn),
+                        last_seen = NOW()
                 """, (tenant_id, fqdn, _ip, _org or None, _asn if _asn else None))
                 saved_assets += 1
 
@@ -1483,7 +1495,12 @@ def _save_report(tenant_id: str, job_id: str, report):
                          %s::inet, %s, %s,
                          %s::integer[], 'MEDIUM', ARRAY['naabu'], FALSE, '[]',
                          NOW(), NOW())
-                    ON CONFLICT DO NOTHING
+                    ON CONFLICT (tenant_id, fqdn, ip) DO UPDATE SET
+                        ports     = EXCLUDED.ports,
+                        org       = COALESCE(EXCLUDED.org,  assets.org),
+                        asn       = COALESCE(EXCLUDED.asn,  assets.asn),
+                        risk      = EXCLUDED.risk,
+                        last_seen = NOW()
                 """, (tenant_id, host, _ip, _org or None, _asn or None, port_list))
                 saved_assets += 1
 
