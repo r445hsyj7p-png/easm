@@ -55,6 +55,7 @@ class PipelineConfig:
     run_nuclei: bool = True
     run_ramparts: bool = True
     run_mcp_scan: bool = True
+    run_dnstwist: bool = True
 
     # Subfinder
     subfinder_recursive: bool = False
@@ -109,6 +110,7 @@ class PipelineReport:
     findings_httpx: list = field(default_factory=list)
     findings_nuclei: list = field(default_factory=list)
     findings_ramparts: list = field(default_factory=list)
+    findings_dnstwist: list = field(default_factory=list)
 
     # Aggregiert + dedupliziert
     all_findings: list = field(default_factory=list)
@@ -244,7 +246,18 @@ class EASMPipeline:
             self._log("pipeline", f"Phase 6 done: {len(report.findings_ramparts)} MCP-Findings", "info")
         else:
             self._log("pipeline", "Phase 6/6: MCP-Analyse übersprungen", "info")
-        _notify("mcp", 88)
+        _notify("mcp", 85)
+
+        # ── Phase 7: Typosquatting (dnstwist) ────────────────────────────────
+        if self.config.run_dnstwist and domain:
+            self._log("pipeline", "Phase 7/7: Typosquatting-Check (dnstwist)", "info")
+            self._phase_dnstwist(report, domain)
+            self._log("pipeline",
+                      f"Phase 7 done: {len(report.findings_dnstwist)} Lookalike-Domains",
+                      "info")
+        else:
+            self._log("pipeline", "Phase 7/7: Typosquatting übersprungen", "info")
+        _notify("dnstwist", 92)
 
         # ── Aggregation + Deduplication ───────────────────────────────────────
         self._log("pipeline", "Aggregation: Deduplizierung & Risk-Scoring", "info")
@@ -547,6 +560,18 @@ class EASMPipeline:
         except Exception as e:
             self._log("ramparts", f"Phase-Fehler: {e}", "error")
 
+    def _phase_dnstwist(self, report: PipelineReport, domain: str) -> None:
+        """Phase 7: dnstwist lookalike-domain detection for the root domain."""
+        from easm.dnstwist_adapter import run as _dnstwist_run  # noqa: PLC0415
+        try:
+            findings = _dnstwist_run(
+                self.tenant_id, domain,
+                timeout=self.config.timeout_phase,
+            )
+            report.findings_dnstwist = findings
+        except Exception as exc:
+            self._log("dnstwist", f"Phase-Fehler: {exc}", "error")
+
     def _aggregate(self, report: PipelineReport):
         """Alle Findings deduplizieren, priorisieren, Risk-Score berechnen"""
         all_findings = (
@@ -556,7 +581,8 @@ class EASMPipeline:
             report.findings_sslyze +
             report.findings_httpx +
             report.findings_nuclei +
-            report.findings_ramparts
+            report.findings_ramparts +
+            report.findings_dnstwist
         )
 
         # Deduplizierung via Fingerprint
@@ -602,13 +628,11 @@ class EASMPipeline:
             },
             "by_tool": {
                 tool: sum(1 for f in unique if f.tool == tool)
-                for tool in ["subfinder", "naabu", "theharvester",
-                             "sslyze", "httpx", "nuclei", "ramparts"]
+                for tool in sorted({f.tool for f in unique})
             },
             "by_category": {
                 cat: sum(1 for f in unique if f.category == cat)
-                for cat in ["subdomain", "port", "email", "http",
-                            "vulnerability", "mcp_exposure", "cve", "osint"]
+                for cat in sorted({f.category for f in unique})
             },
             "subdomains_found": len(report.subdomains_discovered),
             "emails_found": len(report.emails_harvested),

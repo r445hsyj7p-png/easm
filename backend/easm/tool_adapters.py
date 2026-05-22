@@ -2046,7 +2046,7 @@ class SpyOnWebAdapter:
             findings.append(ToolFinding(
                 tenant_id=tenant_id,
                 tool="spyonweb",
-                category="typosquatting",
+                category="typosquat",
                 severity="CRITICAL",
                 title=f"Analytics-ID von verdächtigen Domains missbraucht: {origin}",
                 description=(

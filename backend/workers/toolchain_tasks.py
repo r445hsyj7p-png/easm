@@ -358,6 +358,15 @@ def run_full_pipeline(self, tenant_id: str, config_dict: dict, request_id: str =
             _diag_log("ramparts",
                       f"{len(mcp_findings)} MCP-Findings",
                       "info" if not mcp_findings else "warn")
+        elif phase == "dnstwist":
+            twist_findings = getattr(report, "findings_dnstwist", [])
+            high = sum(1 for f in twist_findings if f.severity == "HIGH")
+            _diag_log(
+                "dnstwist",
+                f"{len(twist_findings)} Lookalike-Domains gefunden"
+                + (f" — {high} mit MX (Phishing-Risiko)" if high else ""),
+                "warn" if high else "info",
+            )
         elif phase == "aggregating":
             total = len(report.all_findings)
             _diag_log("pipeline",
