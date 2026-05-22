@@ -246,8 +246,11 @@ except ImportError:
 try:
     from api.email_intel import router as email_intel_router
     app.include_router(email_intel_router)
-except Exception:
-    pass
+except Exception as _email_import_err:
+    import logging as _log
+    _log.getLogger(__name__).error(
+        "email_intel router NOT registered — import failed: %s", _email_import_err, exc_info=True
+    )
 
 # ─── Docs (gesichert, nur MSSP-Rollen) ───────────────────────────────────────
 
