@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, useCallback, useMemo } from "react";
-import { Mail, Search, RefreshCw, Trash2, ChevronDown, ChevronUp, AlertTriangle, Settings } from "lucide-react";
+import { Mail, Search, RefreshCw, Trash2, ChevronDown, ChevronUp, AlertTriangle, Settings, List } from "lucide-react";
 import { toast } from "sonner";
 import {
   LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, ReferenceLine,
@@ -198,6 +198,10 @@ export default function EmailIntelPage() {
   const [settings, setSettings] = useState({ auto_rescan_enabled: false, rescan_interval_days: 7 });
   const [showSettings, setShowSettings] = useState(false);
   const [savingSettings, setSavingSettings] = useState(false);
+  const [bulkMode, setBulkMode] = useState(false);
+  const [bulkText, setBulkText] = useState("");
+  const [bulkAnalyzing, setBulkAnalyzing] = useState(false);
+  const [bulkResults, setBulkResults] = useState([]);
   const pollRef = useRef(null);
 
   const base = `/tenants/${tenantId}/email-intel`;
@@ -301,6 +305,28 @@ export default function EmailIntelPage() {
     }
   };
 
+  const handleBulkAnalyze = async () => {
+    const domains = bulkText
+      .split(/[\n,]+/)
+      .map(d => d.trim())
+      .filter(Boolean)
+      .slice(0, 20);
+    if (domains.length === 0) return;
+    setBulkAnalyzing(true);
+    setBulkResults([]);
+    try {
+      const resp = await apiFetch(`${base}/analyze/bulk`, { method: "POST", body: { domains } });
+      setBulkResults(resp.results || []);
+      const queued = (resp.results || []).filter(r => r.status === "pending" || r.status === "running").length;
+      toast.success(`Bulk-Analyse: ${queued} Domain(s) gestartet`);
+      loadDomains();
+    } catch (e) {
+      toast.error("Bulk-Analyse fehlgeschlagen", { description: e.message });
+    } finally {
+      setBulkAnalyzing(false);
+    }
+  };
+
   const handleSaveSettings = async () => {
     setSavingSettings(true);
     try {
@@ -339,33 +365,125 @@ export default function EmailIntelPage() {
       }}>
         {/* Domain input */}
         <div style={{ padding: 12, borderBottom: `1px solid ${T.border}` }}>
-          <div style={{ display: "flex", gap: 6 }}>
-            <input
-              value={domain}
-              onChange={e => setDomain(e.target.value)}
-              onKeyDown={e => e.key === "Enter" && handleAnalyze()}
-              placeholder="example.com"
-              style={{
-                flex: 1, background: T.bg3, border: `1px solid ${T.border}`,
-                borderRadius: 5, padding: "6px 8px",
-                fontFamily: T.font, fontSize: 11, color: T.text1, outline: "none",
-              }}
-            />
+          {/* Mode toggle */}
+          <div style={{ display: "flex", gap: 4, marginBottom: 8 }}>
             <button
-              onClick={handleAnalyze}
-              disabled={analyzing || !domain.trim()}
+              onClick={() => { setBulkMode(false); setBulkResults([]); }}
               style={{
-                background: T.accent, border: "none", borderRadius: 5,
-                padding: "6px 10px", cursor: analyzing ? "not-allowed" : "pointer",
-                opacity: analyzing ? 0.6 : 1, display: "flex", alignItems: "center",
+                flex: 1, padding: "3px 0", border: `1px solid ${T.border}`,
+                borderRadius: 4, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", gap: 4,
+                background: !bulkMode ? alpha(T.accent, 12) : T.bg3,
+                color: !bulkMode ? T.accent : T.text4,
+                fontFamily: T.fontSans, fontSize: 10,
               }}
             >
-              {analyzing
-                ? <RefreshCw size={12} color="var(--background)" style={{ animation: "spin 1s linear infinite" }} />
-                : <Search size={12} color="var(--background)" />
-              }
+              <Search size={10} /> Einzeln
+            </button>
+            <button
+              onClick={() => { setBulkMode(true); setBulkResults([]); }}
+              style={{
+                flex: 1, padding: "3px 0", border: `1px solid ${T.border}`,
+                borderRadius: 4, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", gap: 4,
+                background: bulkMode ? alpha(T.accent, 12) : T.bg3,
+                color: bulkMode ? T.accent : T.text4,
+                fontFamily: T.fontSans, fontSize: 10,
+              }}
+            >
+              <List size={10} /> Bulk
             </button>
           </div>
+
+          {!bulkMode ? (
+            <div style={{ display: "flex", gap: 6 }}>
+              <input
+                value={domain}
+                onChange={e => setDomain(e.target.value)}
+                onKeyDown={e => e.key === "Enter" && handleAnalyze()}
+                placeholder="example.com"
+                style={{
+                  flex: 1, background: T.bg3, border: `1px solid ${T.border}`,
+                  borderRadius: 5, padding: "6px 8px",
+                  fontFamily: T.font, fontSize: 11, color: T.text1, outline: "none",
+                }}
+              />
+              <button
+                onClick={handleAnalyze}
+                disabled={analyzing || !domain.trim()}
+                style={{
+                  background: T.accent, border: "none", borderRadius: 5,
+                  padding: "6px 10px", cursor: analyzing ? "not-allowed" : "pointer",
+                  opacity: analyzing ? 0.6 : 1, display: "flex", alignItems: "center",
+                }}
+              >
+                {analyzing
+                  ? <RefreshCw size={12} color="var(--background)" style={{ animation: "spin 1s linear infinite" }} />
+                  : <Search size={12} color="var(--background)" />
+                }
+              </button>
+            </div>
+          ) : (
+            <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+              <textarea
+                value={bulkText}
+                onChange={e => setBulkText(e.target.value)}
+                placeholder={"example.com\nother.org\n…"}
+                rows={5}
+                style={{
+                  width: "100%", background: T.bg3, border: `1px solid ${T.border}`,
+                  borderRadius: 5, padding: "6px 8px", resize: "vertical",
+                  fontFamily: T.font, fontSize: 11, color: T.text1, outline: "none",
+                  boxSizing: "border-box",
+                }}
+              />
+              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+                <span style={{ fontFamily: T.fontSans, fontSize: 9, color: T.text4 }}>
+                  {Math.min(bulkText.split(/[\n,]+/).filter(d => d.trim()).length, 20)}/20 Domains
+                </span>
+                <button
+                  onClick={handleBulkAnalyze}
+                  disabled={bulkAnalyzing || !bulkText.trim()}
+                  style={{
+                    background: T.accent, border: "none", borderRadius: 5,
+                    padding: "5px 12px", cursor: bulkAnalyzing ? "not-allowed" : "pointer",
+                    opacity: bulkAnalyzing ? 0.6 : 1,
+                    fontFamily: T.fontSans, fontSize: 10, color: "var(--background)",
+                    display: "flex", alignItems: "center", gap: 5,
+                  }}
+                >
+                  {bulkAnalyzing
+                    ? <RefreshCw size={10} color="var(--background)" style={{ animation: "spin 1s linear infinite" }} />
+                    : <List size={10} color="var(--background)" />
+                  }
+                  Analysieren
+                </button>
+              </div>
+              {bulkResults.length > 0 && (
+                <div style={{
+                  marginTop: 4, maxHeight: 120, overflowY: "auto",
+                  border: `1px solid ${T.border}`, borderRadius: 5,
+                }}>
+                  {bulkResults.map(r => (
+                    <div key={r.domain} style={{
+                      display: "flex", alignItems: "center", gap: 6,
+                      padding: "4px 8px", borderBottom: `1px solid ${T.border}`,
+                      fontSize: 10, fontFamily: T.font,
+                    }}>
+                      <span style={{
+                        width: 6, height: 6, borderRadius: "50%", flexShrink: 0,
+                        background: r.status === "error" ? "var(--critical)" : r.status === "pending" || r.status === "running" ? T.accent : T.text3,
+                      }} />
+                      <span style={{ flex: 1, color: T.text2, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                        {r.domain}
+                      </span>
+                      <span style={{ color: T.text4, flexShrink: 0 }}>
+                        {r.status === "error" ? "Fehler" : r.status === "pending" ? "Gestartet" : r.status === "running" ? "Läuft" : r.status}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
         </div>
 
         {/* Domain list */}
@@ -560,6 +678,12 @@ export default function EmailIntelPage() {
                   value={gs.mta_sts_mode ?? "—"}
                   sub={gs.tls_rpt_present ? "TLS-RPT ✓" : "kein TLS-RPT"}
                   warn={!gs.mta_sts_mode}
+                />
+                <SummaryCard
+                  label="DNSSEC"
+                  value={gs.dnssec_signed ? "✓" : "—"}
+                  sub={gs.dnssec_signed ? "signiert" : "nicht signiert"}
+                  warn={!gs.dnssec_signed}
                 />
               </div>
             )}

@@ -43,6 +43,7 @@ def score(
     dkim_results=None,   # list[DkimResult] | None
     rbl_hits=None,       # list[RblHit] | None
     mta_sts=None,        # MtaStsResult | None
+    dnssec_signed: bool = False,
 ) -> ScoreResult:
     points = 0
     findings: list[EmailFinding] = []
@@ -183,6 +184,41 @@ def score(
                 detail="Ohne rua-Adresse erhalten Sie keine Berichte über SPF/DKIM-Fehler.",
                 remediation="Fügen Sie rua=mailto:dmarc@ihre-domain.com hinzu.",
             ))
+
+        if dmarc.sp is not None:
+            _sp_strength = {"none": 1, "quarantine": 2, "reject": 3}.get(dmarc.sp, 1)
+            _p_strength  = {"none": 1, "quarantine": 2, "reject": 3}.get(dmarc.p, 2)
+            if _sp_strength < _p_strength:
+                sev = "HIGH" if dmarc.sp == "none" else "MEDIUM"
+                penalty = 10 if dmarc.sp == "none" else 5
+                points += penalty
+                findings.append(EmailFinding(
+                    code="DMARC_SP_WEAKER", severity=sev,
+                    title=f"DMARC-Subdomain-Policy (sp={dmarc.sp}) schwächer als Domain-Policy (p={dmarc.p})",
+                    detail=f"sp={dmarc.sp} schützt Subdomains weniger als die Haupt-Domain (p={dmarc.p}). "
+                           "Angreifer könnten Subdomains für Phishing missbrauchen.",
+                    remediation=f"Setzen Sie sp={dmarc.p} oder entfernen Sie das sp=-Tag.",
+                ))
+
+        if dmarc.ruf:
+            findings.append(EmailFinding(
+                code="DMARC_FORENSIC_REPORTS", severity="INFO",
+                title="DMARC Forensic-Reporting (ruf=) konfiguriert",
+                detail=f"Forensic-Reports können Mail-Header mit personenbezogenen Daten enthalten. "
+                       f"Empfänger: {', '.join(dmarc.ruf[:3])}{'…' if len(dmarc.ruf) > 3 else ''}",
+                remediation="Prüfen Sie DSGVO-Konformität. Viele Provider haben ruf= aus Datenschutzgründen abgeschaltet.",
+            ))
+
+    # ── DNSSEC ─────────────────────────────────────────────────────────────
+    if not dnssec_signed:
+        points += 5
+        findings.append(EmailFinding(
+            code="DNSSEC_MISSING", severity="LOW",
+            title="DNSSEC nicht aktiviert",
+            detail="Ohne DNSSEC können DNS-Antworten durch Cache-Poisoning gefälscht werden, "
+                   "was E-Mail-Umleitung und Domain-Hijacking ermöglicht.",
+            remediation="Aktivieren Sie DNSSEC bei Ihrem DNS-Provider und publizieren Sie DS-Records beim Registrar.",
+        ))
 
     # ── Providers & IPs ────────────────────────────────────────────────────
     unknown_ips = [ip for ip in enriched_ips if ip.provider_category == "unknown"]

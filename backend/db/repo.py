@@ -678,6 +678,19 @@ async def email_intel_save_settings(
     await db.commit()
 
 
+async def email_intel_get_active_job(
+    db: AsyncSession, tenant_id: str, domain: str,
+) -> dict | None:
+    """Return the most recent pending/running job for a domain, or None."""
+    row = (await db.execute(text("""
+        SELECT id, status FROM email_intel_jobs
+        WHERE tenant_id = :tid AND domain = :domain
+          AND status IN ('pending', 'running')
+        ORDER BY created_at DESC LIMIT 1
+    """), {"tid": tenant_id, "domain": domain})).mappings().first()
+    return dict(row) if row else None
+
+
 async def email_intel_list_due_domains(
     db: AsyncSession, limit: int = 10,
 ) -> list[dict]:

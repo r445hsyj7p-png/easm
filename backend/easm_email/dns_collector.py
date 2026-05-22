@@ -27,6 +27,7 @@ class DnsBundle:
     spf_raw: str | None = None
     dmarc_raw: str | None = None
     mx_records: list[MxRecord] = field(default_factory=list)
+    dnssec_signed: bool = False
     errors: list[str] = field(default_factory=list)
 
 
@@ -86,5 +87,12 @@ def collect(domain: str) -> DnsBundle:
         bundle.mx_records.sort(key=lambda m: m.priority)
     except (dns.resolver.NXDOMAIN, dns.resolver.NoAnswer, dns.exception.DNSException) as e:
         log.debug("MX lookup failed for %s: %s", domain, e)
+
+    # DNSSEC: presence of DNSKEY records at zone apex signals a signed zone
+    try:
+        dnskey_answers = resolver.resolve(domain, "DNSKEY")
+        bundle.dnssec_signed = len(dnskey_answers) > 0
+    except (dns.resolver.NoAnswer, dns.resolver.NXDOMAIN, dns.exception.DNSException):
+        bundle.dnssec_signed = False
 
     return bundle

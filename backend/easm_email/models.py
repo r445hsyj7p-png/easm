@@ -41,6 +41,7 @@ class GraphSummary(BaseModel):
     rbl_listed_count: int = 0
     mta_sts_mode: Optional[str] = None
     tls_rpt_present: bool = False
+    dnssec_signed: bool = False
 
 
 class AnalyzeResponse(BaseModel):
@@ -86,3 +87,34 @@ class DomainHistoryItem(BaseModel):
 class EmailIntelSettings(BaseModel):
     auto_rescan_enabled: bool = False
     rescan_interval_days: int = 7
+
+
+class BulkAnalyzeRequest(BaseModel):
+    domains: list[str]
+
+    @field_validator("domains")
+    @classmethod
+    def validate_domains(cls, v: list[str]) -> list[str]:
+        if not v:
+            raise ValueError("domains list is empty")
+        if len(v) > 20:
+            raise ValueError("Maximum 20 domains per bulk request")
+        validated = []
+        for raw in v:
+            d = raw.strip().lower()
+            d = re.sub(r"^https?://", "", d).split("/")[0].split("?")[0].rstrip(".")
+            if not re.match(r"^(?:[a-z0-9](?:[a-z0-9\-]{0,61}[a-z0-9])?\.)+[a-z]{2,}$", d):
+                raise ValueError(f"Invalid domain: {d!r}")
+            validated.append(d)
+        return list(dict.fromkeys(validated))  # deduplicate, preserve order
+
+
+class BulkDomainStatus(BaseModel):
+    domain: str
+    job_id: Optional[str] = None
+    status: str
+    error: Optional[str] = None
+
+
+class BulkAnalyzeResponse(BaseModel):
+    results: list[BulkDomainStatus]

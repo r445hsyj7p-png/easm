@@ -18,6 +18,7 @@ from easm_email.models import (
     AnalyzeRequest, AnalyzeResponse, ResultResponse,
     EmailFinding, GraphSummary, DomainListItem,
     DomainHistoryItem, EmailIntelSettings,
+    BulkAnalyzeRequest, BulkAnalyzeResponse, BulkDomainStatus,
 )
 from easm_email.risk_scorer import risk_band as _risk_band
 
@@ -49,6 +50,10 @@ async def analyze(
     db: AsyncSession = Depends(get_db),
 ):
     ctx.assert_own_tenant(tenant_id)
+
+    active = await repo.email_intel_get_active_job(db, tenant_id, body.domain)
+    if active:
+        return AnalyzeResponse(job_id=str(active["id"]), status=active["status"])
 
     job_id = str(uuid.uuid4())
     try:
@@ -228,6 +233,43 @@ async def save_settings(
             )
         raise HTTPException(status_code=500, detail=str(exc))
     return EmailIntelSettings(auto_rescan_enabled=body.auto_rescan_enabled, rescan_interval_days=interval)
+
+
+# ── POST /analyze/bulk ────────────────────────────────────────────────────────
+
+@router.post("/analyze/bulk", response_model=BulkAnalyzeResponse)
+@limiter.limit("5/minute")
+async def analyze_bulk(
+    request: Request,
+    tenant_id: str,
+    body: BulkAnalyzeRequest,
+    ctx: AuthContext = Depends(get_auth),
+    db: AsyncSession = Depends(get_db),
+):
+    ctx.assert_own_tenant(tenant_id)
+
+    results: list[BulkDomainStatus] = []
+    for domain in body.domains:
+        active = await repo.email_intel_get_active_job(db, tenant_id, domain)
+        if active:
+            results.append(BulkDomainStatus(domain=domain, job_id=str(active["id"]), status=active["status"]))
+            continue
+
+        job_id = str(uuid.uuid4())
+        try:
+            await repo.email_intel_create_job(db, job_id, tenant_id, domain)
+        except Exception as exc:
+            results.append(BulkDomainStatus(domain=domain, status="error", error=str(exc)[:200]))
+            continue
+
+        try:
+            from workers.email_intel_tasks import email_intel_analyze
+            email_intel_analyze.delay(job_id, domain, tenant_id)
+            results.append(BulkDomainStatus(domain=domain, job_id=job_id, status=JobStatus.PENDING))
+        except Exception as exc:
+            results.append(BulkDomainStatus(domain=domain, job_id=job_id, status="error", error=str(exc)[:200]))
+
+    return BulkAnalyzeResponse(results=results)
 
 
 # ── DELETE /domains/{domain} ───────────────────────────────────────────────────

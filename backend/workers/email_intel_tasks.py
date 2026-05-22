@@ -184,7 +184,8 @@ def email_intel_analyze(self, job_id: str, domain: str, tenant_id: str):
         result = risk_score(spf_tree, dmarc, enriched_ips, mx_servers,
                             dkim_results=dkim_results,
                             rbl_hits=rbl_hits,
-                            mta_sts=mta_sts)
+                            mta_sts=mta_sts,
+                            dnssec_signed=bundle.dnssec_signed)
 
         findings_json = json.dumps([
             {
@@ -206,6 +207,7 @@ def email_intel_analyze(self, job_id: str, domain: str, tenant_id: str):
             "rbl_listed_count": len([h for h in rbl_hits if h.severity != "INFO"]),
             "mta_sts_mode": mta_sts.mode if mta_sts else None,
             "tls_rpt_present": mta_sts.tls_rpt_present if mta_sts else False,
+            "dnssec_signed": bundle.dnssec_signed,
         })
         enriched_by_addr = {e.address: e for e in enriched_ips}
 
