@@ -114,6 +114,34 @@ except ImportError:
     _HAS_NETADDR = False
 
 
+# Provider → known SPF include domains (used to detect which providers are in use)
+PROVIDER_SPF_INCLUDES: dict[str, list[str]] = {
+    "Google Workspace":    ["_spf.google.com", "googlemail.com"],
+    "Microsoft 365":       ["spf.protection.outlook.com"],
+    "Mailchimp / Mandrill": ["servers.mcsv.net", "spf.mandrillapp.com"],
+    "SendGrid":            ["sendgrid.net"],
+    "Mailgun":             ["mailgun.org", "mailgun.net"],
+    "Amazon SES":          ["amazonses.com"],
+    "Postmark":            ["spf.mtasv.net"],
+    "Zoho Mail":           ["zoho.com", "_spf.zoho.com"],
+    "SparkPost":           ["sparkpostmail.com"],
+}
+
+# Provider → DKIM selectors commonly probed by dkim_checker
+# Empty list = provider uses domain-specific selectors (check not reliable)
+PROVIDER_EXPECTED_SELECTORS: dict[str, list[str]] = {
+    "Google Workspace":    ["google", "googleg"],
+    "Microsoft 365":       ["selector1", "selector2"],
+    "Mailchimp / Mandrill": ["k1", "k2", "k3"],
+    "SendGrid":            ["s1", "s2", "smtpapi"],
+    "Mailgun":             [],
+    "Amazon SES":          [],
+    "Postmark":            ["pm"],
+    "Zoho Mail":           ["zoho"],
+    "SparkPost":           ["scph0316"],
+}
+
+
 def classify_ip(ip: str, ptr: str | None = None) -> ProviderEntry | None:
     """Return the best matching ProviderEntry for an IP, or None."""
     if _HAS_NETADDR:

@@ -216,3 +216,21 @@ def max_depth(node: SpfNode) -> int:
 
 def count_includes(node: SpfNode) -> int:
     return len(node.children) + sum(count_includes(c) for c in node.children)
+
+
+def extract_spf_ips(node: SpfNode) -> list[str]:
+    """Collect all ip4/ip6 CIDR strings declared anywhere in the full SPF tree."""
+    result = []
+    for mech in node.mechanisms:
+        if mech.type in ("ip4", "ip6") and mech.value:
+            result.append(mech.value)
+    for child in node.children:
+        result.extend(extract_spf_ips(child))
+    return result
+
+
+def has_mechanism_type(node: SpfNode, mtype: str) -> bool:
+    """Return True if any node in the tree carries a mechanism of the given type."""
+    if any(m.type == mtype for m in node.mechanisms):
+        return True
+    return any(has_mechanism_type(c, mtype) for c in node.children)

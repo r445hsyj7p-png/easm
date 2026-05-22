@@ -59,6 +59,7 @@ celery_app.conf.update(
         "workers.toolchain_tasks.run_ip_reputation_check":{"queue": "intel"},
         "workers.toolchain_tasks.run_threat_intel_check": {"queue": "intel"},
         "workers.toolchain_tasks.run_sslyze":             {"queue": "tls"},
+        "workers.toolchain_tasks.email_intel_rescan_due": {"queue": "scheduler"},
     },
 
     # Beat-Schedules
@@ -146,6 +147,13 @@ celery_app.conf.update(
             "schedule": crontab(hour=6, minute=30),
             "args": ["all"],
             "options": {"queue": "intel"},
+        },
+
+        # ── Email-Intel automatischer Re-Scan ─────────────────────────────
+        "email-intel-rescan": {
+            "task": "workers.toolchain_tasks.email_intel_rescan_due",
+            "schedule": crontab(minute="*/30"),
+            "options": {"queue": "scheduler"},
         },
     }
 )
@@ -318,9 +326,13 @@ def run_full_pipeline(self, tenant_id: str, config_dict: dict, request_id: str =
         elif phase == "discovery":
             sub_count = len(report.subdomains_discovered)
             _diag_log("subfinder", f"{sub_count} Subdomains/Domains gefunden")
-            email_count = len([f for f in report.findings_theharvester if f.category == "email"])
-            if email_count:
-                _diag_log("theharvester", f"{email_count} E-Mail-Adressen via OSINT gesammelt")
+            email_addrs: set[str] = set()
+            for f in report.findings_theharvester:
+                if f.category == "email":
+                    email_addrs.update(f.raw_data.get("emails", []))
+                    email_addrs.update(f.raw_data.get("other_emails", []))
+            if email_addrs:
+                _diag_log("theharvester", f"{len(email_addrs)} E-Mail-Adressen via OSINT gesammelt")
         elif phase == "portscan":
             open_ports = report.open_ports or {}
             port_count = sum(len(v) for v in open_ports.values())
@@ -1818,3 +1830,69 @@ def run_intelligence_full(tenant_id: str, config: dict):
         f"ti={results['threat_intel']['status']}"
     )
     return results
+
+
+# ── Email-Intel automatischer Re-Scan ─────────────────────────────────────────
+
+@celery_app.task(
+    name="workers.toolchain_tasks.email_intel_rescan_due",
+    queue="scheduler",
+    soft_time_limit=120,
+    time_limit=150,
+)
+def email_intel_rescan_due():
+    """Dispatch email_intel_analyze for all domains overdue for re-scan. Max 10 per tick."""
+    import psycopg2, os as _os
+    conn = None
+    dispatched = 0
+    try:
+        conn = psycopg2.connect(_os.getenv("DATABASE_URL", ""))
+        with conn.cursor() as cur:
+            cur.execute("""
+                SELECT DISTINCT ON (j.tenant_id, j.domain)
+                    j.tenant_id, j.domain
+                FROM email_intel_jobs j
+                JOIN email_intel_settings s ON s.tenant_id = j.tenant_id
+                WHERE s.auto_rescan_enabled = true
+                  AND j.status = 'complete'
+                  AND j.completed_at < now() - (s.rescan_interval_days || ' days')::interval
+                  AND NOT EXISTS (
+                      SELECT 1 FROM email_intel_jobs j2
+                      WHERE j2.tenant_id = j.tenant_id
+                        AND j2.domain    = j.domain
+                        AND j2.status IN ('pending', 'running')
+                  )
+                ORDER BY j.tenant_id, j.domain, j.completed_at ASC
+                LIMIT 10
+            """)
+            rows = cur.fetchall()
+
+        import uuid as _uuid
+        pending = [(str(_uuid.uuid4()), tid, dom) for tid, dom in rows]
+
+        if pending:
+            with conn.cursor() as cur:
+                cur.executemany("""
+                    INSERT INTO email_intel_jobs (id, tenant_id, domain, status, created_at)
+                    VALUES (%s, %s, %s, 'pending', now())
+                """, pending)
+            conn.commit()
+
+        for job_id, tenant_id, domain in pending:
+            celery_app.send_task(
+                "workers.email_intel_tasks.email_intel_analyze",
+                args=[job_id, domain, tenant_id],
+                queue="email_intel",
+            )
+            dispatched += 1
+            logger.info("[email_intel_rescan] queued domain=%s tenant=%s job=%s", domain, tenant_id, job_id)
+
+    except Exception as exc:
+        logger.error("[email_intel_rescan] failed: %s", exc)
+    finally:
+        if conn:
+            conn.close()
+
+    if dispatched:
+        logger.info("[email_intel_rescan] dispatched %d re-scan jobs", dispatched)
+    return {"dispatched": dispatched}

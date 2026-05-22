@@ -17,6 +17,8 @@ from easm_email.job_status import JobStatus
 from easm_email.models import (
     AnalyzeRequest, AnalyzeResponse, ResultResponse,
     EmailFinding, GraphSummary, DomainListItem,
+    DomainHistoryItem, EmailIntelSettings,
+    BulkAnalyzeRequest, BulkAnalyzeResponse, BulkDomainStatus,
 )
 from easm_email.risk_scorer import risk_band as _risk_band
 
@@ -38,7 +40,7 @@ router = APIRouter(
 
 # ── POST /analyze ──────────────────────────────────────────────────────────────
 
-@router.post("/analyze", response_model=AnalyzeResponse)
+@router.post("/analyze", response_model=AnalyzeResponse, status_code=202)
 @limiter.limit("10/minute")
 async def analyze(
     request: Request,    # required by SlowAPI
@@ -49,11 +51,32 @@ async def analyze(
 ):
     ctx.assert_own_tenant(tenant_id)
 
-    job_id = str(uuid.uuid4())
-    await repo.email_intel_create_job(db, job_id, tenant_id, body.domain)
+    active = await repo.email_intel_get_active_job(db, tenant_id, body.domain)
+    if active:
+        return AnalyzeResponse(job_id=str(active["id"]), status=active["status"])
 
-    from workers.email_intel_tasks import email_intel_analyze
-    email_intel_analyze.delay(job_id, body.domain, tenant_id)
+    job_id = str(uuid.uuid4())
+    try:
+        await repo.email_intel_create_job(db, job_id, tenant_id, body.domain)
+    except Exception as exc:
+        exc_name = type(exc).__name__
+        exc_msg  = str(exc)
+        if "email_intel_jobs" in exc_msg or "UndefinedTable" in exc_name or "does not exist" in exc_msg:
+            raise HTTPException(
+                status_code=503,
+                detail="Tabelle email_intel_jobs fehlt — bitte 'alembic upgrade head' ausführen "
+                       "oder Container neu bauen (CACHEBUST aktualisieren).",
+            )
+        raise HTTPException(status_code=503, detail=f"Datenbankfehler: {exc_name}: {exc_msg}")
+
+    try:
+        from workers.email_intel_tasks import email_intel_analyze
+        email_intel_analyze.delay(job_id, body.domain, tenant_id)
+    except Exception as exc:
+        raise HTTPException(
+            status_code=503,
+            detail=f"Celery-Worker nicht erreichbar (worker-email-intel läuft?): {exc}",
+        )
 
     return AnalyzeResponse(job_id=job_id, status=JobStatus.PENDING)
 
@@ -150,6 +173,108 @@ async def list_domains(
         )
         for r in rows
     ]
+
+
+# ── GET /domains/{domain}/history ─────────────────────────────────────────────
+
+@router.get("/domains/{domain:path}/history", response_model=list[DomainHistoryItem])
+async def get_domain_history(
+    tenant_id: str,
+    domain: str,
+    limit: int = Query(20, ge=1, le=100),
+    ctx: AuthContext = Depends(get_auth),
+    db: AsyncSession = Depends(get_db),
+):
+    ctx.assert_own_tenant(tenant_id)
+    rows = await repo.email_intel_get_history(db, tenant_id, domain, limit)
+    return [
+        DomainHistoryItem(
+            job_id=str(r["id"]),
+            risk_score=r["risk_score"],
+            risk_band=_risk_band(r["risk_score"]),
+            findings_count=r["findings_count"] or 0,
+            created_at=r["created_at"],
+        )
+        for r in rows
+        if r["risk_score"] is not None
+    ]
+
+
+# ── GET /settings ──────────────────────────────────────────────────────────────
+
+@router.get("/settings", response_model=EmailIntelSettings)
+async def get_settings(
+    tenant_id: str,
+    ctx: AuthContext = Depends(get_auth),
+    db: AsyncSession = Depends(get_db),
+):
+    ctx.assert_own_tenant(tenant_id)
+    data = await repo.email_intel_get_settings(db, tenant_id)
+    return EmailIntelSettings(**data)
+
+
+@router.put("/settings", response_model=EmailIntelSettings)
+async def save_settings(
+    tenant_id: str,
+    body: EmailIntelSettings,
+    ctx: AuthContext = Depends(get_auth),
+    db: AsyncSession = Depends(get_db),
+):
+    ctx.assert_own_tenant(tenant_id)
+    interval = max(1, min(90, body.rescan_interval_days))
+    try:
+        await repo.email_intel_save_settings(db, tenant_id, body.auto_rescan_enabled, interval)
+    except Exception as exc:
+        exc_msg = str(exc)
+        if "email_intel_settings" in exc_msg or "does not exist" in exc_msg:
+            raise HTTPException(
+                status_code=503,
+                detail="Tabelle email_intel_settings fehlt — bitte Migration ausführen.",
+            )
+        raise HTTPException(status_code=500, detail=str(exc))
+    return EmailIntelSettings(auto_rescan_enabled=body.auto_rescan_enabled, rescan_interval_days=interval)
+
+
+# ── POST /analyze/bulk ────────────────────────────────────────────────────────
+
+@router.post("/analyze/bulk", response_model=BulkAnalyzeResponse, status_code=202)
+@limiter.limit("2/minute")
+async def analyze_bulk(
+    request: Request,
+    tenant_id: str,
+    body: BulkAnalyzeRequest,
+    ctx: AuthContext = Depends(get_auth),
+    db: AsyncSession = Depends(get_db),
+):
+    ctx.assert_own_tenant(tenant_id)
+
+    results: list[BulkDomainStatus] = []
+    for domain in body.domains:
+        active = await repo.email_intel_get_active_job(db, tenant_id, domain)
+        if active:
+            results.append(BulkDomainStatus(domain=domain, job_id=str(active["id"]), status=active["status"]))
+            continue
+
+        job_id = str(uuid.uuid4())
+        try:
+            await repo.email_intel_create_job(db, job_id, tenant_id, domain)
+        except Exception as exc:
+            results.append(BulkDomainStatus(domain=domain, status="error", error=str(exc)[:200]))
+            continue
+
+        try:
+            from workers.email_intel_tasks import email_intel_analyze
+            email_intel_analyze.delay(job_id, domain, tenant_id)
+            results.append(BulkDomainStatus(domain=domain, job_id=job_id, status=JobStatus.PENDING))
+        except Exception as exc:
+            # Mark the DB row failed so it doesn't permanently block future scans
+            try:
+                await repo.email_intel_mark_failed(db, job_id, str(exc)[:200])
+            except Exception:
+                pass
+            results.append(BulkDomainStatus(domain=domain, job_id=job_id, status="error", error=str(exc)[:200]))
+
+    return BulkAnalyzeResponse(results=results)
 
 
 # ── DELETE /domains/{domain} ───────────────────────────────────────────────────

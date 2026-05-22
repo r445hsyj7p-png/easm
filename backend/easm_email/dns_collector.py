@@ -9,6 +9,7 @@ from dataclasses import dataclass, field
 
 import dns.resolver
 import dns.exception
+import dns.flags
 
 log = logging.getLogger(__name__)
 
@@ -27,6 +28,7 @@ class DnsBundle:
     spf_raw: str | None = None
     dmarc_raw: str | None = None
     mx_records: list[MxRecord] = field(default_factory=list)
+    dnssec_signed: bool = False
     errors: list[str] = field(default_factory=list)
 
 
@@ -86,5 +88,16 @@ def collect(domain: str) -> DnsBundle:
         bundle.mx_records.sort(key=lambda m: m.priority)
     except (dns.resolver.NXDOMAIN, dns.resolver.NoAnswer, dns.exception.DNSException) as e:
         log.debug("MX lookup failed for %s: %s", domain, e)
+
+    # DNSSEC: query DNSKEY at zone apex with the DO bit so public resolvers
+    # include DNSSEC RRs; without DO the answer section is typically empty
+    # even for signed zones.
+    try:
+        dnssec_resolver = _make_resolver()
+        dnssec_resolver.use_edns(0, dns.flags.DO, 4096)
+        dnskey_answers = dnssec_resolver.resolve(domain, "DNSKEY")
+        bundle.dnssec_signed = bool(dnskey_answers)
+    except (dns.resolver.NoAnswer, dns.resolver.NXDOMAIN, dns.exception.DNSException):
+        bundle.dnssec_signed = False
 
     return bundle

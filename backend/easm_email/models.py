@@ -36,6 +36,15 @@ class GraphSummary(BaseModel):
     mx_count: int
     ip_count: int
     asn_count: int
+    dkim_selectors_found: int = 0
+    dkim_weak_keys: int = 0
+    rbl_listed_count: int = 0
+    mta_sts_mode: Optional[str] = None
+    tls_rpt_present: bool = False
+    dnssec_signed: bool = False
+    score_delta: Optional[int] = None
+    dkim_missing_providers: list[str] = []
+    rua_external_domains: list[str] = []
 
 
 class AnalyzeResponse(BaseModel):
@@ -68,3 +77,48 @@ class DomainListItem(BaseModel):
     risk_band: Optional[str] = None
     created_at: datetime
     completed_at: Optional[datetime] = None
+
+
+class DomainHistoryItem(BaseModel):
+    job_id: str
+    risk_score: int
+    risk_band: str
+    findings_count: int
+    created_at: datetime
+
+
+class EmailIntelSettings(BaseModel):
+    auto_rescan_enabled: bool = False
+    rescan_interval_days: int = 7
+
+
+class BulkAnalyzeRequest(BaseModel):
+    domains: list[str]
+
+    @field_validator("domains")
+    @classmethod
+    def validate_domains(cls, v: list[str]) -> list[str]:
+        if not v:
+            raise ValueError("domains list is empty")
+        validated = []
+        for raw in v:
+            d = raw.strip().lower()
+            d = re.sub(r"^https?://", "", d).split("/")[0].split("?")[0].rstrip(".")
+            if not re.match(r"^(?:[a-z0-9](?:[a-z0-9\-]{0,61}[a-z0-9])?\.)+[a-z]{2,}$", d):
+                raise ValueError(f"Invalid domain: {d!r}")
+            validated.append(d)
+        deduped = list(dict.fromkeys(validated))  # preserve order
+        if len(deduped) > 20:
+            raise ValueError("Maximum 20 unique domains per bulk request")
+        return deduped
+
+
+class BulkDomainStatus(BaseModel):
+    domain: str
+    job_id: Optional[str] = None
+    status: str
+    error: Optional[str] = None
+
+
+class BulkAnalyzeResponse(BaseModel):
+    results: list[BulkDomainStatus]

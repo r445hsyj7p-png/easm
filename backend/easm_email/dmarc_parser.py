@@ -47,7 +47,8 @@ def parse(dmarc_raw: str | None) -> DmarcPolicy:
         if key == "p":
             policy.p = value.lower() if value.lower() in ("none", "quarantine", "reject") else "none"
         elif key == "sp":
-            policy.sp = value.lower()
+            sp_val = value.lower()
+            policy.sp = sp_val if sp_val in ("none", "quarantine", "reject") else None
         elif key == "pct":
             try:
                 policy.pct = max(0, min(100, int(value)))

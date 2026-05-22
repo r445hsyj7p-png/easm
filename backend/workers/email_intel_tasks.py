@@ -16,13 +16,16 @@ from celery.signals import worker_ready
 from datetime import datetime, timezone
 
 from easm_email.job_status import JobStatus
+from easm_email.models import EmailFinding
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
 log = logging.getLogger(__name__)
 
 _redis = os.getenv("REDIS_URL", "redis://localhost:6379/0")
-_redis_backend = _redis.replace("/0", "/1", 1) if _redis.endswith("/0") else _redis
+# Use slice replacement so only the trailing DB-index "/0" is swapped, not any "/0"
+# that may appear in a Redis password or path component.
+_redis_backend = (_redis[:-2] + "/1") if _redis.endswith("/0") else _redis
 
 celery_app = Celery(
     "easm_email_intel",
@@ -71,6 +74,19 @@ def _init_neo4j_schema(**kwargs):
 
 def _db_conn():
     return psycopg2.connect(os.getenv("DATABASE_URL", ""))
+
+
+def _get_previous_score(conn, tenant_id: str, domain: str, current_job_id: str) -> int | None:
+    """Return the risk_score of the most recent completed scan before the current job."""
+    with conn.cursor() as cur:
+        cur.execute("""
+            SELECT risk_score FROM email_intel_jobs
+            WHERE tenant_id = %s AND domain = %s
+              AND status = 'complete' AND id != %s AND risk_score IS NOT NULL
+            ORDER BY completed_at DESC LIMIT 1
+        """, (tenant_id, domain, current_job_id))
+        row = cur.fetchone()
+    return row[0] if row else None
 
 
 def _update_job(conn, job_id: str, **fields) -> None:
@@ -129,7 +145,44 @@ def email_intel_analyze(self, job_id: str, domain: str, tenant_id: str):
         ]
         enriched_ips = enrich_ip_list(ip_tuples)
 
-        # ── Step 6: Graph (Neo4j — non-fatal on failure) ──────────────────
+        # ── Steps 6-8: DKIM + RBL + MTA-STS in parallel (all non-fatal) ──
+        from concurrent.futures import ThreadPoolExecutor as _TPE
+
+        _mx_ips = [ip.address for mx in mx_servers for ip in mx.ips]
+
+        def _run_dkim():
+            from easm_email.dkim_checker import discover as _disc
+            results = _disc(domain)
+            log.info("[email_intel] dkim selectors found=%d", len(results))
+            return results
+
+        def _run_rbl():
+            from easm_email.rbl_checker import check_ips as _chk
+            hits = _chk(_mx_ips)
+            if hits:
+                log.warning("[email_intel] rbl hits=%d for domain=%s", len(hits), domain)
+            return hits
+
+        def _run_mta():
+            from easm_email.mta_sts_checker import check as _chk
+            result = _chk(domain)
+            log.info("[email_intel] mta_sts declared=%s mode=%s tls_rpt=%s",
+                     result.dns_declared, result.mode, result.tls_rpt_present)
+            return result
+
+        dkim_results, rbl_hits, mta_sts = [], [], None
+        with _TPE(max_workers=3) as _pool:
+            _f_dkim = _pool.submit(_run_dkim)
+            _f_rbl  = _pool.submit(_run_rbl)
+            _f_mta  = _pool.submit(_run_mta)
+            try: dkim_results = _f_dkim.result()
+            except Exception as e: log.warning("[email_intel] dkim failed: %s", e)
+            try: rbl_hits = _f_rbl.result()
+            except Exception as e: log.warning("[email_intel] rbl failed: %s", e)
+            try: mta_sts = _f_mta.result()
+            except Exception as e: log.warning("[email_intel] mta_sts failed: %s", e)
+
+        # ── Step 9: Graph (Neo4j — non-fatal on failure) ──────────────────
         try:
             from easm_email.graph_builder import upsert_analysis, delete_domain_graph
             delete_domain_graph(domain, tenant_id)
@@ -142,9 +195,38 @@ def email_intel_analyze(self, job_id: str, domain: str, tenant_id: str):
         except Exception as neo_err:
             log.warning("[email_intel] neo4j write skipped: %s", neo_err)
 
-        # ── Step 7: Risk scoring ──────────────────────────────────────────
+        # ── Step 10: Risk scoring ─────────────────────────────────────────
         from easm_email.risk_scorer import score as risk_score
-        result = risk_score(spf_tree, dmarc, enriched_ips, mx_servers)
+        result = risk_score(spf_tree, dmarc, enriched_ips, mx_servers,
+                            dkim_results=dkim_results,
+                            rbl_hits=rbl_hits,
+                            mta_sts=mta_sts,
+                            dnssec_signed=bundle.dnssec_signed,
+                            domain=domain)
+
+        # ── Step 11: Score delta (non-fatal, requires completed prev scan) ─
+        prev_score = _get_previous_score(conn, tenant_id, domain, job_id)
+        if prev_score is not None:
+            delta = result.score - prev_score
+            result.score_delta = delta  # stored for summary_json
+            if delta >= 10:
+                sev = "HIGH" if delta >= 20 else "MEDIUM"
+                result.findings.insert(0, EmailFinding(
+                    code="SCORE_REGRESSION",
+                    severity=sev,
+                    title=f"Score verschlechtert: {prev_score} → {result.score} (+{delta})",
+                    detail=f"Der Risiko-Score hat sich gegenüber der letzten Analyse "
+                           f"um {delta} Punkte erhöht.",
+                    remediation="Prüfen Sie die neuen Findings und beheben Sie die kritischsten zuerst.",
+                ))
+            elif delta <= -10:
+                result.findings.insert(0, EmailFinding(
+                    code="SCORE_IMPROVED",
+                    severity="INFO",
+                    title=f"Score verbessert: {prev_score} → {result.score} ({delta})",
+                    detail=f"Der Risiko-Score hat sich um {abs(delta)} Punkte verbessert.",
+                    remediation="",
+                ))
 
         findings_json = json.dumps([
             {
@@ -161,8 +243,19 @@ def email_intel_analyze(self, job_id: str, domain: str, tenant_id: str):
             "ip_count": result.ip_count,
             "asn_count": result.asn_count,
             "mx_count": result.mx_count,
+            "dkim_selectors_found": len(dkim_results),
+            "dkim_weak_keys": sum(1 for r in dkim_results if r.weak),
+            "rbl_listed_count": len([h for h in rbl_hits if h.severity != "INFO"]),
+            "mta_sts_mode": mta_sts.mode if mta_sts else None,
+            "tls_rpt_present": mta_sts.tls_rpt_present if mta_sts else False,
+            "dnssec_signed": bundle.dnssec_signed,
+            "score_delta": getattr(result, "score_delta", None),
+            "dkim_missing_providers": result.dkim_missing_providers,
+            "rua_external_domains": result.rua_external_domains,
         })
         enriched_by_addr = {e.address: e for e in enriched_ips}
+        _spf_uncovered_set = set(result.spf_uncovered_ips)
+        _mta_sts_uncovered_set = set(result.mta_sts_uncovered_fqdns)
 
         def _ip_dict(ip) -> dict:
             e = enriched_by_addr.get(ip.address)
@@ -174,10 +267,16 @@ def email_intel_analyze(self, job_id: str, domain: str, tenant_id: str):
                 "provider_category": e.provider_category if e else "unknown",
                 "asn": ({"number": e.asn.number, "name": e.asn.name, "country": e.asn.country}
                         if e and e.asn else None),
+                "spf_covered": ip.address not in _spf_uncovered_set,
             }
 
         mx_json = json.dumps([
-            {"fqdn": mx.fqdn, "priority": mx.priority, "ips": [_ip_dict(ip) for ip in mx.ips]}
+            {
+                "fqdn": mx.fqdn,
+                "priority": mx.priority,
+                "mta_sts_covered": mx.fqdn not in _mta_sts_uncovered_set,
+                "ips": [_ip_dict(ip) for ip in mx.ips],
+            }
             for mx in mx_servers
         ])
 
