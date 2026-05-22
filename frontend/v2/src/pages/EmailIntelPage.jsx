@@ -794,6 +794,11 @@ export default function EmailIntelPage() {
                 </div>
                 <div style={{ fontFamily: T.fontSans, fontSize: 10, color: T.text4, marginTop: 2 }}>
                   {getStatusText()}
+                  {activeResult.created_at && (
+                    <span style={{ marginLeft: 8, opacity: 0.7 }}>
+                      · gestartet {new Date(activeResult.created_at).toLocaleString("de-DE")}
+                    </span>
+                  )}
                 </div>
               </div>
 
@@ -871,6 +876,7 @@ export default function EmailIntelPage() {
             {gs && (
               <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
                 <SummaryCard label="SPF-Tiefe" value={gs.spf_depth} sub="include-Ebenen" />
+                <SummaryCard label="SPF-Includes" value={gs.spf_include_count} sub="verschachtelt" />
                 <SummaryCard label="DNS-Lookups" value={`${gs.spf_lookup_count}/10`} sub="RFC 7208" warn={gs.spf_lookup_count > 10} />
                 <SummaryCard label="Provider" value={gs.provider_count} />
                 <SummaryCard label="MX-Server" value={gs.mx_count} />
@@ -1001,7 +1007,7 @@ export default function EmailIntelPage() {
                 <table style={{ width: "100%", borderCollapse: "collapse" }}>
                   <thead>
                     <tr style={{ borderBottom: `1px solid ${T.border}` }}>
-                      {["Priorität", "FQDN", "IPs", "SPF", "MTA-STS"].map(h => (
+                      {["Prio", "FQDN / IP", "Provider · ASN", "PTR", "SPF", "MTA-STS"].map(h => (
                         <th key={h} style={{ padding: "6px 12px", textAlign: "left", fontFamily: T.fontSans, fontSize: 10, color: T.text4, textTransform: "uppercase" }}>{h}</th>
                       ))}
                     </tr>
@@ -1011,21 +1017,68 @@ export default function EmailIntelPage() {
                       const allSpfOk = (mx.ips || []).every(ip => ip.spf_covered !== false);
                       const mtaOk = mx.mta_sts_covered;
                       const mtaConfigured = !!gs?.mta_sts_mode;
+                      const ips = mx.ips || [];
                       return (
-                        <tr key={mx.fqdn} style={{ borderBottom: `1px solid ${T.border}` }}>
-                          <td style={{ padding: "8px 12px", fontFamily: T.font, fontSize: 11, color: T.text3 }}>{mx.priority}</td>
-                          <td style={{ padding: "8px 12px", fontFamily: T.font, fontSize: 11, color: T.text1 }}>{mx.fqdn}</td>
-                          <td style={{ padding: "8px 12px", fontFamily: T.font, fontSize: 10, color: T.text3 }}>
-                            {(mx.ips || []).map(ip => (
-                              <span key={ip.address} style={{ color: ip.spf_covered === false ? "var(--critical)" : "inherit", marginRight: 6 }}>
-                                {ip.spf_covered === false ? "✗ " : ""}{ip.address}
-                              </span>
+                        <tr key={mx.fqdn} style={{ borderBottom: `1px solid ${T.border}`, verticalAlign: "top" }}>
+                          {/* Prio */}
+                          <td style={{ padding: "10px 12px", fontFamily: T.font, fontSize: 11, color: T.text3, whiteSpace: "nowrap" }}>
+                            {mx.priority}
+                          </td>
+                          {/* FQDN + IPs */}
+                          <td style={{ padding: "10px 12px" }}>
+                            <div style={{ fontFamily: T.font, fontSize: 11, color: T.text1, marginBottom: ips.length ? 4 : 0 }}>
+                              {mx.fqdn}
+                            </div>
+                            {ips.map(ip => (
+                              <div key={ip.address} style={{ display: "flex", alignItems: "center", gap: 4, marginTop: 2 }}>
+                                <span style={{
+                                  fontFamily: T.font, fontSize: 9, padding: "1px 4px",
+                                  borderRadius: 3, border: `1px solid ${T.border}`,
+                                  color: T.text4, background: T.bg3, flexShrink: 0,
+                                }}>
+                                  {ip.version === 6 ? "IPv6" : "IPv4"}
+                                </span>
+                                <span style={{ fontFamily: T.font, fontSize: 10, color: ip.spf_covered === false ? "var(--critical)" : T.text3 }}>
+                                  {ip.spf_covered === false ? "✗ " : ""}{ip.address}
+                                </span>
+                              </div>
                             ))}
                           </td>
-                          <td style={{ padding: "8px 12px", fontFamily: T.font, fontSize: 12, fontWeight: 700, color: allSpfOk ? "#22c55e" : "var(--critical)" }}>
+                          {/* Provider · ASN */}
+                          <td style={{ padding: "10px 12px" }}>
+                            {ips.map(ip => (
+                              <div key={ip.address} style={{ marginTop: 2, lineHeight: 1.3 }}>
+                                {ip.provider_name && ip.provider_name !== "Unknown" ? (
+                                  <div style={{ fontFamily: T.fontSans, fontSize: 10, color: T.text2 }}>
+                                    {ip.provider_name}
+                                  </div>
+                                ) : null}
+                                {ip.asn ? (
+                                  <div style={{ fontFamily: T.font, fontSize: 9, color: T.text4 }}>
+                                    AS{ip.asn.number}
+                                    {ip.asn.name ? ` · ${ip.asn.name}` : ""}
+                                    {ip.asn.country ? ` (${ip.asn.country})` : ""}
+                                  </div>
+                                ) : (
+                                  <div style={{ fontFamily: T.font, fontSize: 9, color: T.text4 }}>—</div>
+                                )}
+                              </div>
+                            ))}
+                          </td>
+                          {/* PTR */}
+                          <td style={{ padding: "10px 12px" }}>
+                            {ips.map(ip => (
+                              <div key={ip.address} style={{ fontFamily: T.font, fontSize: 9, color: T.text4, marginTop: 2, maxWidth: 200, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={ip.ptr || ""}>
+                                {ip.ptr || <span style={{ color: T.text4, opacity: 0.5 }}>—</span>}
+                              </div>
+                            ))}
+                          </td>
+                          {/* SPF */}
+                          <td style={{ padding: "10px 12px", fontFamily: T.font, fontSize: 12, fontWeight: 700, color: allSpfOk ? "#22c55e" : "var(--critical)", whiteSpace: "nowrap" }}>
                             {allSpfOk ? "✓" : "✗"}
                           </td>
-                          <td style={{ padding: "8px 12px", fontFamily: T.font, fontSize: 12, fontWeight: 700, color: !mtaConfigured ? T.text4 : mtaOk ? "#22c55e" : "#f59e0b" }}>
+                          {/* MTA-STS */}
+                          <td style={{ padding: "10px 12px", fontFamily: T.font, fontSize: 12, fontWeight: 700, color: !mtaConfigured ? T.text4 : mtaOk ? "#22c55e" : "#f59e0b", whiteSpace: "nowrap" }}>
                             {!mtaConfigured ? "—" : mtaOk ? "✓" : "✗"}
                           </td>
                         </tr>
