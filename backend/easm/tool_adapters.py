@@ -1232,7 +1232,10 @@ class NucleiAdapter:
             # Standard-Templates wenn keine angegeben
             if not template_dirs and not tags:
                 # Keep in sync with PipelineConfig.nuclei_tags
-                tags = "api,exposure,misconfig,default-logins,mcp,cve,tech"
+                tags = (
+                    "api,exposure,misconfig,default-logins,mcp,cve,tech,"
+                    "xss,sqli,ssrf,lfi,rce,redirect,takeover"
+                )
 
             cmd = [
                 _binary_path if _avail else self.binary,

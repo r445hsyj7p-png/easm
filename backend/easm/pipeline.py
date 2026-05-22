@@ -73,9 +73,14 @@ class PipelineConfig:
     httpx_screenshots: bool = True
     httpx_threads: int = 50
 
-    # Nuclei — tags must match NucleiAdapter.run() fallback; "default-logins" (plural)
-    # is the actual nuclei template folder/tag name (not "default-login")
-    nuclei_tags: str = "api,exposure,misconfig,default-logins,mcp,cve,tech"
+    # Nuclei template tags. "default-logins" (plural) is the actual template folder/tag
+    # name (not "default-login"). Added web-vuln tags (xss, sqli, ssrf, lfi, rce,
+    # redirect, takeover) so real application vulnerabilities are detected — not just
+    # misconfigs and CVEs.
+    nuclei_tags: str = (
+        "api,exposure,misconfig,default-logins,mcp,cve,tech,"
+        "xss,sqli,ssrf,lfi,rce,redirect,takeover"
+    )
     nuclei_severity: str = "low,medium,high,critical"
     nuclei_rate: int = 100
 
@@ -232,7 +237,16 @@ class EASMPipeline:
 
         # ── Phase 5: Vulnerability-Scan (Nuclei) ──────────────────────────────
         self._log("pipeline", "Phase 5/6: Vulnerability-Scanning (Nuclei)", "info")
-        vuln_targets = list(set(http_targets + mcp_hosts))
+        # Prefer HTTPX-discovered live URLs over the raw pre-probing target list.
+        # HTTPX already determined which hosts respond and on which scheme/port,
+        # so Nuclei doesn't need to re-probe and discard unresponsive hosts.
+        live_urls = sorted({
+            f.affected_asset for f in report.findings_httpx
+            if f.affected_asset and f.affected_asset.startswith(("http://", "https://"))
+        })
+        vuln_targets = list(set((live_urls if live_urls else http_targets) + mcp_hosts))
+        if live_urls:
+            self._log("nuclei", f"{len(live_urls)} live URLs von HTTPX → Nuclei-Targets", "info")
         self._phase_vulnscan(report, vuln_targets, mcp_hosts)
         self._log("pipeline", f"Phase 5 done: {len(report.findings_nuclei)} Nuclei-Findings", "info")
         _notify("vuln", 70)
