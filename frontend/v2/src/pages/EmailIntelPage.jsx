@@ -299,6 +299,8 @@ export default function EmailIntelPage() {
   const [page, setPage]         = useState(0);
   const [activeResult, setActiveResult] = useState(null);
   const [polling, setPolling]   = useState(null);
+  const [pollError, setPollError]   = useState(null);
+  const [pollStartedAt, setPollStartedAt] = useState(null);
   const [history, setHistory]   = useState([]);
   const [settings, setSettings] = useState({ auto_rescan_enabled: false, rescan_interval_days: 7 });
   const [showSettings, setShowSettings] = useState(false);
@@ -308,7 +310,15 @@ export default function EmailIntelPage() {
   const [analyzeError, setAnalyzeError] = useState(null);
   const [bulkAnalyzing, setBulkAnalyzing] = useState(false);
   const [bulkResults, setBulkResults] = useState([]);
+  const [now, setNow] = useState(Date.now());
   const pollRef = useRef(null);
+
+  // Tick every 5 s while polling so timeout banner appears without extra state
+  useEffect(() => {
+    if (!polling) return;
+    const t = setInterval(() => setNow(Date.now()), 5000);
+    return () => clearInterval(t);
+  }, [polling]);
 
   const base = `/tenants/${tenantId}/email-intel`;
 
@@ -350,10 +360,15 @@ export default function EmailIntelPage() {
     if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null; }
     if (!polling) return;
     let mounted = true;
+    let consecutiveErrors = 0;
+    setPollError(null);
+    setPollStartedAt(Date.now());
     pollRef.current = setInterval(async () => {
       try {
         const result = await apiFetch(`${base}/result/${polling}`);
         if (!mounted) return;
+        consecutiveErrors = 0;
+        setPollError(null);
         const done = result.status === "complete" || result.status === "failed";
         setActiveResult(prev => {
           if (!done && prev?.status === result.status) return prev;
@@ -362,16 +377,21 @@ export default function EmailIntelPage() {
         if (done) {
           setPolling(null);
           setAnalyzing(false);
+          setPollStartedAt(null);
           loadDomains();
           if (result.status === "complete") {
             toast.success(`Analyse abgeschlossen: ${result.domain}`, {
               description: `Score ${result.risk_score} · ${result.risk_band}`,
             });
-          } else {
-            toast.error("Analyse fehlgeschlagen", { description: result.error });
           }
         }
-      } catch { /* silent */ }
+      } catch (e) {
+        if (!mounted) return;
+        consecutiveErrors++;
+        if (consecutiveErrors >= 3) {
+          setPollError(e.message);
+        }
+      }
     }, 2500);
     return () => { mounted = false; clearInterval(pollRef.current); pollRef.current = null; };
   }, [polling, base, loadDomains]);
@@ -381,6 +401,8 @@ export default function EmailIntelPage() {
     if (!d) return;
     setAnalyzing(true);
     setAnalyzeError(null);
+    setPollError(null);
+    setPollStartedAt(null);
     try {
       const resp = await apiFetch(`${base}/analyze`, { method: "POST", body: { domain: d } });
       setPolling(resp.job_id);
@@ -775,23 +797,64 @@ export default function EmailIntelPage() {
                 </div>
               </div>
 
-              {isRunning && (
-                <div style={{ display: "flex", alignItems: "center", gap: 6, color: T.text3 }}>
-                  <RefreshCw size={14} style={{ animation: "spin 1s linear infinite" }} />
-                  <span style={{ fontFamily: T.fontSans, fontSize: 11 }}>DNS-Analyse läuft…</span>
+              {isRunning && !pollError && (
+                <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 4 }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: 6, color: T.text3 }}>
+                    <RefreshCw size={14} style={{ animation: "spin 1s linear infinite" }} />
+                    <span style={{ fontFamily: T.fontSans, fontSize: 11 }}>DNS-Analyse läuft…</span>
+                  </div>
+                  {pollStartedAt && now - pollStartedAt > 90_000 && (
+                    <div style={{
+                      display: "flex", alignItems: "center", gap: 5,
+                      background: "color-mix(in srgb, var(--warning,#f59e0b) 12%, transparent)",
+                      border: "1px solid color-mix(in srgb, var(--warning,#f59e0b) 30%, transparent)",
+                      borderRadius: 5, padding: "4px 8px",
+                    }}>
+                      <AlertTriangle size={11} color="var(--warning,#f59e0b)" />
+                      <span style={{ fontFamily: T.fontSans, fontSize: 10, color: "var(--warning,#f59e0b)" }}>
+                        Dauert länger als erwartet — läuft der Worker?
+                      </span>
+                    </div>
+                  )}
                 </div>
               )}
 
-              {activeResult.status === "failed" && activeResult.error && (
+              {isRunning && pollError && (
                 <div style={{
                   display: "flex", alignItems: "flex-start", gap: 8, marginLeft: "auto",
-                  background: "rgba(var(--critical-rgb,220,38,38),0.08)",
-                  border: "1px solid rgba(var(--critical-rgb,220,38,38),0.25)",
+                  background: "color-mix(in srgb, var(--critical) 8%, transparent)",
+                  border: "1px solid color-mix(in srgb, var(--critical) 25%, transparent)",
+                  borderRadius: 6, padding: "8px 12px", maxWidth: 380,
+                }}>
+                  <AlertTriangle size={13} color="var(--critical)" style={{ flexShrink: 0, marginTop: 1 }} />
+                  <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+                    <span style={{ fontFamily: T.fontSans, fontSize: 11, color: T.text1 }}>
+                      Ergebnis nicht abrufbar: {pollError}
+                    </span>
+                    <button
+                      onClick={() => { setPolling(null); setAnalyzing(false); setPollError(null); }}
+                      style={{
+                        alignSelf: "flex-start", background: "none", border: `1px solid ${T.border}`,
+                        borderRadius: 4, padding: "2px 8px", cursor: "pointer",
+                        fontFamily: T.fontSans, fontSize: 10, color: T.text3,
+                      }}
+                    >
+                      Abbrechen
+                    </button>
+                  </div>
+                </div>
+              )}
+
+              {(activeResult.status === "failed") && (
+                <div style={{
+                  display: "flex", alignItems: "flex-start", gap: 8, marginLeft: "auto",
+                  background: "color-mix(in srgb, var(--critical) 8%, transparent)",
+                  border: "1px solid color-mix(in srgb, var(--critical) 25%, transparent)",
                   borderRadius: 6, padding: "8px 12px", maxWidth: 420,
                 }}>
                   <AlertTriangle size={13} color="var(--critical)" style={{ flexShrink: 0, marginTop: 1 }} />
                   <span style={{ fontFamily: T.fontSans, fontSize: 11, color: T.text1, wordBreak: "break-word" }}>
-                    {activeResult.error}
+                    {activeResult.error || "Analyse fehlgeschlagen"}
                   </span>
                 </div>
               )}
