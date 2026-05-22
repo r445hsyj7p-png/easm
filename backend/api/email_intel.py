@@ -40,7 +40,7 @@ router = APIRouter(
 
 # ── POST /analyze ──────────────────────────────────────────────────────────────
 
-@router.post("/analyze", response_model=AnalyzeResponse)
+@router.post("/analyze", response_model=AnalyzeResponse, status_code=202)
 @limiter.limit("10/minute")
 async def analyze(
     request: Request,    # required by SlowAPI
@@ -237,8 +237,8 @@ async def save_settings(
 
 # ── POST /analyze/bulk ────────────────────────────────────────────────────────
 
-@router.post("/analyze/bulk", response_model=BulkAnalyzeResponse)
-@limiter.limit("5/minute")
+@router.post("/analyze/bulk", response_model=BulkAnalyzeResponse, status_code=202)
+@limiter.limit("2/minute")
 async def analyze_bulk(
     request: Request,
     tenant_id: str,
@@ -267,6 +267,11 @@ async def analyze_bulk(
             email_intel_analyze.delay(job_id, domain, tenant_id)
             results.append(BulkDomainStatus(domain=domain, job_id=job_id, status=JobStatus.PENDING))
         except Exception as exc:
+            # Mark the DB row failed so it doesn't permanently block future scans
+            try:
+                await repo.email_intel_mark_failed(db, job_id, str(exc)[:200])
+            except Exception:
+                pass
             results.append(BulkDomainStatus(domain=domain, job_id=job_id, status="error", error=str(exc)[:200]))
 
     return BulkAnalyzeResponse(results=results)

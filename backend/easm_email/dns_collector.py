@@ -9,6 +9,7 @@ from dataclasses import dataclass, field
 
 import dns.resolver
 import dns.exception
+import dns.flags
 
 log = logging.getLogger(__name__)
 
@@ -88,10 +89,14 @@ def collect(domain: str) -> DnsBundle:
     except (dns.resolver.NXDOMAIN, dns.resolver.NoAnswer, dns.exception.DNSException) as e:
         log.debug("MX lookup failed for %s: %s", domain, e)
 
-    # DNSSEC: presence of DNSKEY records at zone apex signals a signed zone
+    # DNSSEC: query DNSKEY at zone apex with the DO bit so public resolvers
+    # include DNSSEC RRs; without DO the answer section is typically empty
+    # even for signed zones.
     try:
-        dnskey_answers = resolver.resolve(domain, "DNSKEY")
-        bundle.dnssec_signed = len(dnskey_answers) > 0
+        dnssec_resolver = _make_resolver()
+        dnssec_resolver.use_edns(0, dns.flags.DO, 4096)
+        dnskey_answers = dnssec_resolver.resolve(domain, "DNSKEY")
+        bundle.dnssec_signed = bool(dnskey_answers)
     except (dns.resolver.NoAnswer, dns.resolver.NXDOMAIN, dns.exception.DNSException):
         bundle.dnssec_signed = False
 

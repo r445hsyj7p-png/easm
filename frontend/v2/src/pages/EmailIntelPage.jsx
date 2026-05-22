@@ -306,20 +306,19 @@ export default function EmailIntelPage() {
   };
 
   const handleBulkAnalyze = async () => {
-    const domains = bulkText
-      .split(/[\n,]+/)
-      .map(d => d.trim())
-      .filter(Boolean)
-      .slice(0, 20);
-    if (domains.length === 0) return;
+    const parsedDomains = [...new Set(
+      bulkText.split(/[\n,]+/).map(d => d.trim()).filter(Boolean)
+    )].slice(0, 20);
+    if (parsedDomains.length === 0) return;
     setBulkAnalyzing(true);
     setBulkResults([]);
     try {
-      const resp = await apiFetch(`${base}/analyze/bulk`, { method: "POST", body: { domains } });
+      const resp = await apiFetch(`${base}/analyze/bulk`, { method: "POST", body: { domains: parsedDomains } });
       setBulkResults(resp.results || []);
       const queued = (resp.results || []).filter(r => r.status === "pending" || r.status === "running").length;
       toast.success(`Bulk-Analyse: ${queued} Domain(s) gestartet`);
-      loadDomains();
+      setBulkText("");
+      await loadDomains();
     } catch (e) {
       toast.error("Bulk-Analyse fehlgeschlagen", { description: e.message });
     } finally {
@@ -437,7 +436,7 @@ export default function EmailIntelPage() {
               />
               <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
                 <span style={{ fontFamily: T.fontSans, fontSize: 9, color: T.text4 }}>
-                  {Math.min(bulkText.split(/[\n,]+/).filter(d => d.trim()).length, 20)}/20 Domains
+                  {Math.min([...new Set(bulkText.split(/[\n,]+/).map(d => d.trim()).filter(Boolean))].length, 20)}/20 Domains
                 </span>
                 <button
                   onClick={handleBulkAnalyze}
@@ -462,24 +461,39 @@ export default function EmailIntelPage() {
                   marginTop: 4, maxHeight: 120, overflowY: "auto",
                   border: `1px solid ${T.border}`, borderRadius: 5,
                 }}>
-                  {bulkResults.map(r => (
-                    <div key={r.domain} style={{
-                      display: "flex", alignItems: "center", gap: 6,
-                      padding: "4px 8px", borderBottom: `1px solid ${T.border}`,
-                      fontSize: 10, fontFamily: T.font,
-                    }}>
-                      <span style={{
-                        width: 6, height: 6, borderRadius: "50%", flexShrink: 0,
-                        background: r.status === "error" ? "var(--critical)" : r.status === "pending" || r.status === "running" ? T.accent : T.text3,
-                      }} />
-                      <span style={{ flex: 1, color: T.text2, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                        {r.domain}
-                      </span>
-                      <span style={{ color: T.text4, flexShrink: 0 }}>
-                        {r.status === "error" ? "Fehler" : r.status === "pending" ? "Gestartet" : r.status === "running" ? "Läuft" : r.status}
-                      </span>
-                    </div>
-                  ))}
+                  {bulkResults.map(r => {
+                    const dotColor = r.status === "error" ? "var(--critical)"
+                      : r.status === "complete" ? "var(--success, #22c55e)"
+                      : r.status === "pending" || r.status === "running" ? T.accent
+                      : T.text3;
+                    const label = r.status === "error" ? "Fehler"
+                      : r.status === "pending" ? "Gestartet"
+                      : r.status === "running" ? "Läuft"
+                      : r.status === "complete" ? "Fertig"
+                      : r.status === "failed" ? "Fehler"
+                      : r.status;
+                    const domainItem = domains.find(d => d.domain === r.domain);
+                    return (
+                      <div
+                        key={r.domain}
+                        onClick={() => domainItem && handleSelectDomain(domainItem)}
+                        style={{
+                          display: "flex", alignItems: "center", gap: 6,
+                          padding: "4px 8px", borderBottom: `1px solid ${T.border}`,
+                          fontSize: 10, fontFamily: T.font,
+                          cursor: domainItem ? "pointer" : "default",
+                        }}
+                        onMouseEnter={e => { if (domainItem) e.currentTarget.style.background = T.bg3; }}
+                        onMouseLeave={e => { e.currentTarget.style.background = "transparent"; }}
+                      >
+                        <span style={{ width: 6, height: 6, borderRadius: "50%", flexShrink: 0, background: dotColor }} />
+                        <span style={{ flex: 1, color: T.text2, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                          {r.domain}
+                        </span>
+                        <span style={{ color: T.text4, flexShrink: 0 }}>{label}</span>
+                      </div>
+                    );
+                  })}
                 </div>
               )}
             </div>
@@ -683,7 +697,6 @@ export default function EmailIntelPage() {
                   label="DNSSEC"
                   value={gs.dnssec_signed ? "✓" : "—"}
                   sub={gs.dnssec_signed ? "signiert" : "nicht signiert"}
-                  warn={!gs.dnssec_signed}
                 />
               </div>
             )}

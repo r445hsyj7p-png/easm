@@ -97,8 +97,6 @@ class BulkAnalyzeRequest(BaseModel):
     def validate_domains(cls, v: list[str]) -> list[str]:
         if not v:
             raise ValueError("domains list is empty")
-        if len(v) > 20:
-            raise ValueError("Maximum 20 domains per bulk request")
         validated = []
         for raw in v:
             d = raw.strip().lower()
@@ -106,7 +104,10 @@ class BulkAnalyzeRequest(BaseModel):
             if not re.match(r"^(?:[a-z0-9](?:[a-z0-9\-]{0,61}[a-z0-9])?\.)+[a-z]{2,}$", d):
                 raise ValueError(f"Invalid domain: {d!r}")
             validated.append(d)
-        return list(dict.fromkeys(validated))  # deduplicate, preserve order
+        deduped = list(dict.fromkeys(validated))  # preserve order
+        if len(deduped) > 20:
+            raise ValueError("Maximum 20 unique domains per bulk request")
+        return deduped
 
 
 class BulkDomainStatus(BaseModel):

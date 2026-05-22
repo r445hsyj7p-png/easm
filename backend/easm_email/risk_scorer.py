@@ -187,7 +187,7 @@ def score(
 
         if dmarc.sp is not None:
             _sp_strength = {"none": 1, "quarantine": 2, "reject": 3}.get(dmarc.sp, 1)
-            _p_strength  = {"none": 1, "quarantine": 2, "reject": 3}.get(dmarc.p, 2)
+            _p_strength  = {"none": 1, "quarantine": 2, "reject": 3}.get(dmarc.p, 1)
             if _sp_strength < _p_strength:
                 sev = "HIGH" if dmarc.sp == "none" else "MEDIUM"
                 penalty = 10 if dmarc.sp == "none" else 5

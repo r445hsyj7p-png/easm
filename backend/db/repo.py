@@ -678,6 +678,15 @@ async def email_intel_save_settings(
     await db.commit()
 
 
+async def email_intel_mark_failed(
+    db: AsyncSession, job_id: str, error: str,
+) -> None:
+    await db.execute(text("""
+        UPDATE email_intel_jobs SET status = 'failed', error = :error WHERE id = :id
+    """), {"id": job_id, "error": error})
+    await db.commit()
+
+
 async def email_intel_get_active_job(
     db: AsyncSession, tenant_id: str, domain: str,
 ) -> dict | None:
