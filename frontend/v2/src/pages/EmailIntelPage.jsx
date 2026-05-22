@@ -305,6 +305,7 @@ export default function EmailIntelPage() {
   const [savingSettings, setSavingSettings] = useState(false);
   const [bulkMode, setBulkMode] = useState(false);
   const [bulkText, setBulkText] = useState("");
+  const [analyzeError, setAnalyzeError] = useState(null);
   const [bulkAnalyzing, setBulkAnalyzing] = useState(false);
   const [bulkResults, setBulkResults] = useState([]);
   const pollRef = useRef(null);
@@ -379,6 +380,7 @@ export default function EmailIntelPage() {
     const d = domain.trim();
     if (!d) return;
     setAnalyzing(true);
+    setAnalyzeError(null);
     try {
       const resp = await apiFetch(`${base}/analyze`, { method: "POST", body: { domain: d } });
       setPolling(resp.job_id);
@@ -386,7 +388,7 @@ export default function EmailIntelPage() {
       toast.success(`Analyse gestartet: ${d}`);
     } catch (e) {
       setAnalyzing(false);
-      toast.error("Analyse-Start fehlgeschlagen", { description: e.message });
+      setAnalyzeError(e.message);
     }
   };
 
@@ -417,6 +419,7 @@ export default function EmailIntelPage() {
     if (parsedDomains.length === 0) return;
     setBulkAnalyzing(true);
     setBulkResults([]);
+    setAnalyzeError(null);
     try {
       const resp = await apiFetch(`${base}/analyze/bulk`, { method: "POST", body: { domains: parsedDomains } });
       setBulkResults(resp.results || []);
@@ -425,7 +428,7 @@ export default function EmailIntelPage() {
       setBulkText("");
       await loadDomains();
     } catch (e) {
-      toast.error("Bulk-Analyse fehlgeschlagen", { description: e.message });
+      setAnalyzeError(e.message);
     } finally {
       setBulkAnalyzing(false);
     }
@@ -498,32 +501,48 @@ export default function EmailIntelPage() {
           </div>
 
           {!bulkMode ? (
-            <div style={{ display: "flex", gap: 6 }}>
-              <input
-                value={domain}
-                onChange={e => setDomain(e.target.value)}
-                onKeyDown={e => e.key === "Enter" && handleAnalyze()}
-                placeholder="example.com"
-                style={{
-                  flex: 1, background: T.bg3, border: `1px solid ${T.border}`,
-                  borderRadius: 5, padding: "6px 8px",
-                  fontFamily: T.font, fontSize: 11, color: T.text1, outline: "none",
-                }}
-              />
-              <button
-                onClick={handleAnalyze}
-                disabled={analyzing || !domain.trim()}
-                style={{
-                  background: T.accent, border: "none", borderRadius: 5,
-                  padding: "6px 10px", cursor: analyzing ? "not-allowed" : "pointer",
-                  opacity: analyzing ? 0.6 : 1, display: "flex", alignItems: "center",
-                }}
-              >
-                {analyzing
-                  ? <RefreshCw size={12} color="var(--background)" style={{ animation: "spin 1s linear infinite" }} />
-                  : <Search size={12} color="var(--background)" />
-                }
-              </button>
+            <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+              <div style={{ display: "flex", gap: 6 }}>
+                <input
+                  value={domain}
+                  onChange={e => { setDomain(e.target.value); if (analyzeError) setAnalyzeError(null); }}
+                  onKeyDown={e => e.key === "Enter" && handleAnalyze()}
+                  placeholder="example.com"
+                  style={{
+                    flex: 1, background: T.bg3,
+                    border: `1px solid ${analyzeError ? "var(--critical)" : T.border}`,
+                    borderRadius: 5, padding: "6px 8px",
+                    fontFamily: T.font, fontSize: 11, color: T.text1, outline: "none",
+                  }}
+                />
+                <button
+                  onClick={handleAnalyze}
+                  disabled={analyzing || !domain.trim()}
+                  style={{
+                    background: T.accent, border: "none", borderRadius: 5,
+                    padding: "6px 10px", cursor: analyzing ? "not-allowed" : "pointer",
+                    opacity: analyzing ? 0.6 : 1, display: "flex", alignItems: "center",
+                  }}
+                >
+                  {analyzing
+                    ? <RefreshCw size={12} color="var(--background)" style={{ animation: "spin 1s linear infinite" }} />
+                    : <Search size={12} color="var(--background)" />
+                  }
+                </button>
+              </div>
+              {analyzeError && (
+                <div style={{
+                  background: "color-mix(in srgb, var(--critical) 10%, transparent)",
+                  border: "1px solid color-mix(in srgb, var(--critical) 35%, transparent)",
+                  borderRadius: 5, padding: "5px 8px",
+                  display: "flex", alignItems: "flex-start", gap: 5,
+                }}>
+                  <AlertTriangle size={11} color="var(--critical)" style={{ flexShrink: 0, marginTop: 1 }} />
+                  <span style={{ fontFamily: T.fontSans, fontSize: 10, color: "var(--critical)", lineHeight: 1.4 }}>
+                    {analyzeError}
+                  </span>
+                </div>
+              )}
             </div>
           ) : (
             <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
@@ -561,6 +580,19 @@ export default function EmailIntelPage() {
                   Analysieren
                 </button>
               </div>
+              {analyzeError && bulkMode && (
+                <div style={{
+                  background: "color-mix(in srgb, var(--critical) 10%, transparent)",
+                  border: "1px solid color-mix(in srgb, var(--critical) 35%, transparent)",
+                  borderRadius: 5, padding: "5px 8px",
+                  display: "flex", alignItems: "flex-start", gap: 5,
+                }}>
+                  <AlertTriangle size={11} color="var(--critical)" style={{ flexShrink: 0, marginTop: 1 }} />
+                  <span style={{ fontFamily: T.fontSans, fontSize: 10, color: "var(--critical)", lineHeight: 1.4 }}>
+                    {analyzeError}
+                  </span>
+                </div>
+              )}
               {bulkResults.length > 0 && (
                 <div style={{
                   marginTop: 4, maxHeight: 120, overflowY: "auto",
