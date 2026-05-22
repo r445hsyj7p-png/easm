@@ -79,6 +79,13 @@ def _parse_record(selector: str, domain: str, raw: str) -> DkimResult:
     p_clean = tags.get("p", "").replace(" ", "").replace("\t", "")
 
     if key_type == "ed25519":
+        # Empty p= signals revocation for all key types per RFC 6376 §3.5
+        if not p_clean:
+            return DkimResult(
+                selector=selector, domain=domain,
+                key_type="ed25519", key_bits_estimate=None,
+                raw=raw, weak=True, revoked=True,
+            )
         return DkimResult(
             selector=selector, domain=domain,
             key_type="ed25519", key_bits_estimate=None,

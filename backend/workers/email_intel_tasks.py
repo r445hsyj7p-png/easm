@@ -23,7 +23,9 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 log = logging.getLogger(__name__)
 
 _redis = os.getenv("REDIS_URL", "redis://localhost:6379/0")
-_redis_backend = _redis.replace("/0", "/1", 1) if _redis.endswith("/0") else _redis
+# Use slice replacement so only the trailing DB-index "/0" is swapped, not any "/0"
+# that may appear in a Redis password or path component.
+_redis_backend = (_redis[:-2] + "/1") if _redis.endswith("/0") else _redis
 
 celery_app = Celery(
     "easm_email_intel",

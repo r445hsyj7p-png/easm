@@ -149,7 +149,12 @@ def score(
                 remediation="Flachen Sie verschachtelte include:-Ketten ab.",
             ))
 
-        for err in spf_tree.errors:
+        # Parser stores CYCLE_DETECTED on the child node where the cycle is found,
+        # not the root — must walk the full tree to detect it.
+        def _tree_errors(node: SpfNode) -> list[str]:
+            return node.errors + [e for c in node.children for e in _tree_errors(c)]
+
+        for err in _tree_errors(spf_tree):
             if "CYCLE_DETECTED" in err:
                 points += 10
                 findings.append(EmailFinding(
@@ -158,6 +163,7 @@ def score(
                     detail=err,
                     remediation="Entfernen Sie den zirkulären include-Verweis.",
                 ))
+                break  # one finding per cycle is sufficient
 
     # ── DMARC ──────────────────────────────────────────────────────────────
     if not dmarc.present:
@@ -232,7 +238,10 @@ def score(
         if dmarc.rua and domain:
             for _addr in dmarc.rua:
                 if _addr.startswith("mailto:"):
-                    _rua_dom = _addr[7:].rsplit("@", 1)[-1].lower().strip()
+                    _local_at = _addr[7:]
+                    if "@" not in _local_at:
+                        continue  # malformed address — no domain part to classify
+                    _rua_dom = _local_at.rsplit("@", 1)[-1].lower().strip()
                     if _rua_dom and _rua_dom != domain and not _rua_dom.endswith("." + domain):
                         _rua_external_domains.append(_rua_dom)
             _rua_external_domains = list(dict.fromkeys(_rua_external_domains))
@@ -292,7 +301,7 @@ def score(
     # Walk the fully-resolved SPF tree for explicit ip4/ip6 ranges and verify
     # each MX IP is covered. Skip if: tree incomplete (lookup limit hit), or
     # a bare `mx` mechanism exists (implicitly authorises all MX hosts).
-    if spf_tree is not None and spf_tree.lookup_count <= _RFC_LOOKUP_LIMIT:
+    if spf_tree is not None and spf_tree.lookup_count < _RFC_LOOKUP_LIMIT:
         if not has_mechanism_type(spf_tree, "mx"):
             _spf_nets = []
             for _cidr in extract_spf_ips(spf_tree):

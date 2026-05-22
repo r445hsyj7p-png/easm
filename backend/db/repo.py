@@ -225,13 +225,13 @@ async def list_assets(
 
 
 async def upsert_asset(db: AsyncSession, tenant_id: str, a: dict):
-    import json as _json, socket as _sock
-    # Validate IP before passing to PostgreSQL ::inet cast
+    import json as _json, ipaddress as _ip
+    # Validate IP (IPv4 and IPv6) before passing to PostgreSQL ::inet cast
     raw_ip = a.get("ip")
     try:
-        _sock.inet_aton(str(raw_ip)) if raw_ip else None
+        _ip.ip_address(str(raw_ip)) if raw_ip else None
         valid_ip = raw_ip
-    except (OSError, TypeError):
+    except ValueError:
         valid_ip = None
     await db.execute(text("""
         INSERT INTO assets
@@ -240,7 +240,15 @@ async def upsert_asset(db: AsyncSession, tenant_id: str, a: dict):
         VALUES
             (gen_random_uuid()::text, :tid, :fqdn, :ip::inet, :org, :asn,
              :ports, :risk, :sources, :takeover, :technologies, NOW(), NOW())
-        ON CONFLICT DO NOTHING
+        ON CONFLICT (tenant_id, fqdn, ip) DO UPDATE SET
+            org          = EXCLUDED.org,
+            asn          = EXCLUDED.asn,
+            ports        = EXCLUDED.ports,
+            risk         = EXCLUDED.risk,
+            sources      = EXCLUDED.sources,
+            takeover     = EXCLUDED.takeover,
+            technologies = EXCLUDED.technologies,
+            last_seen    = NOW()
     """), {
         "tid": tenant_id, "fqdn": a.get("fqdn"),
         "ip": valid_ip, "org": a.get("org"), "asn": a.get("asn"),
