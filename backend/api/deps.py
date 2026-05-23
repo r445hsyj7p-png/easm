@@ -23,9 +23,16 @@ from starlette.requests import Request
 # ─── Rate limiter ─────────────────────────────────────────────────────────────
 
 def _real_ip(request: Request) -> str:
+    # Use X-Real-IP (set by Traefik to the actual client IP, not spoofable by the client).
+    # Fall back to the rightmost X-Forwarded-For entry added by the trusted proxy,
+    # then to the direct connection address.
+    real_ip = request.headers.get("X-Real-IP")
+    if real_ip:
+        return real_ip.strip()
     forwarded = request.headers.get("X-Forwarded-For")
     if forwarded:
-        return forwarded.split(",")[0].strip()
+        # Rightmost entry is appended by the trusted Traefik proxy and cannot be spoofed.
+        return forwarded.split(",")[-1].strip()
     return request.client.host if request.client else "unknown"
 
 limiter = Limiter(
