@@ -6,7 +6,7 @@ from typing import Optional
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from db.database import get_db
-from api.main import get_auth, AuthContext
+from api.deps import get_auth, AuthContext
 from search.search_service import SearchService
 
 search_router = APIRouter(prefix="/api/v1/search", tags=["Search"])

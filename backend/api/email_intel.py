@@ -10,7 +10,7 @@ import uuid
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from api.main import get_auth, AuthContext, limiter
+from api.deps import get_auth, AuthContext, limiter
 from db.database import get_db
 from db import repo
 from easm_email.job_status import JobStatus

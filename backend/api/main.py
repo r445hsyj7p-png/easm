@@ -14,16 +14,23 @@ from pydantic import BaseModel, EmailStr, validator
 from typing import Optional
 from datetime import datetime, timedelta, timezone
 import uuid, json, os, secrets as _secrets, logging
-from slowapi import Limiter, _rate_limit_exceeded_handler
-from slowapi.util import get_remote_address
+from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 from slowapi.middleware import SlowAPIMiddleware
 
-import jwt as pyjwt
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from db.database import get_db
 from db import repo
+
+# Shared auth / rate-limiting — imported BEFORE any sub-routers to avoid
+# circular imports (email_intel.py and search.py import from api.deps, not
+# from api.main).
+from api.deps import (
+    limiter, AuthContext, get_auth, bearer,
+    create_jwt, decode_jwt, hash_pw, verify_pw,
+    JWT_EXPIRE_HOURS, SECRET_KEY,
+)
 
 # ─── Correlation-ID context ───────────────────────────────────────────────────
 request_id_var: ContextVar[str] = ContextVar("request_id", default="")
@@ -42,86 +49,8 @@ for _h in logging.root.handlers:
 
 logger = logging.getLogger(__name__)
 
-# ─── Rate limiter ────────────────────────────────────────────────────────────
-
-def _real_ip(request: Request) -> str:
-    forwarded = request.headers.get("X-Forwarded-For")
-    if forwarded:
-        return forwarded.split(",")[0].strip()
-    return request.client.host if request.client else "unknown"
-
-limiter = Limiter(
-    key_func=_real_ip,
-    storage_uri=os.environ.get("REDIS_URL", "redis://localhost:6379/0"),
-    default_limits=["300/minute"],
-)
-
 # ─── Config ──────────────────────────────────────────────────────────────────
-SECRET_KEY       = os.environ.get("SECRET_KEY", "dev-secret-change-in-production")
-JWT_ALGORITHM    = "HS256"
-JWT_EXPIRE_HOURS = 12
-USERS_FILE       = os.environ.get("USERS_FILE", "/data/users.json")
-
-# ─── JWT helpers ─────────────────────────────────────────────────────────────
-
-def create_jwt(user_id: str, tenant_id: str, role: str) -> str:
-    exp = datetime.now(timezone.utc) + timedelta(hours=JWT_EXPIRE_HOURS)
-    return pyjwt.encode(
-        {"sub": user_id, "tid": tenant_id, "role": role, "exp": exp},
-        SECRET_KEY, algorithm=JWT_ALGORITHM,
-    )
-
-def decode_jwt(token: str) -> dict:
-    return pyjwt.decode(token, SECRET_KEY, algorithms=[JWT_ALGORITHM])
-
-# ─── Password hashing ─────────────────────────────────────────────────────────
-
-import hashlib as _hashlib, base64 as _base64
-import bcrypt as _bcrypt
-
-# Use bcrypt directly (passlib[bcrypt] installs the bcrypt package).
-# SHA-256 pre-hash produces exactly 44 ASCII bytes — always under bcrypt's
-# 72-byte limit, and avoids passlib's truncate_error ValueError entirely.
-
-def _prepare_pw(password: str) -> bytes:
-    digest = _hashlib.sha256(password.encode("utf-8")).digest()
-    return _base64.b64encode(digest)  # 44 bytes
-
-def hash_pw(password: str) -> str:
-    return _bcrypt.hashpw(_prepare_pw(password), _bcrypt.gensalt()).decode("utf-8")
-
-def verify_pw(plain: str, hashed: str) -> bool:
-    try:
-        return _bcrypt.checkpw(_prepare_pw(plain), hashed.encode("utf-8"))
-    except Exception:
-        return False
-
-# ─── Auth context ─────────────────────────────────────────────────────────────
-
-class AuthContext:
-    def __init__(self, user_id: str, tenant_id: str, role: str):
-        self.user_id   = user_id
-        self.tenant_id = tenant_id
-        self.role      = role
-
-    def assert_own_tenant(self, tenant_id: str):
-        if self.role in ("mssp_admin", "mssp_analyst"):
-            return  # MSSP staff see all tenants
-        if self.tenant_id != tenant_id:
-            raise HTTPException(status_code=403, detail="Zugriff verweigert.")
-
-bearer = HTTPBearer(auto_error=False)
-
-async def get_auth(
-    cred: Optional[HTTPAuthorizationCredentials] = Depends(bearer),
-) -> AuthContext:
-    if not cred:
-        raise HTTPException(status_code=401, detail="Authentifizierung erforderlich.")
-    try:
-        payload = decode_jwt(cred.credentials)
-        return AuthContext(payload["sub"], payload.get("tid", ""), payload["role"])
-    except Exception:
-        raise HTTPException(status_code=401, detail="Ungültiger oder abgelaufener Token.")
+USERS_FILE = os.environ.get("USERS_FILE", "/data/users.json")
 
 # ─── Pydantic models ──────────────────────────────────────────────────────────
 
