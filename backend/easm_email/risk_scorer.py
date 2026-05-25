@@ -301,7 +301,7 @@ def score(
     # Walk the fully-resolved SPF tree for explicit ip4/ip6 ranges and verify
     # each MX IP is covered. Skip if: tree incomplete (lookup limit hit), or
     # a bare `mx` mechanism exists (implicitly authorises all MX hosts).
-    if spf_tree is not None and spf_tree.lookup_count < _RFC_LOOKUP_LIMIT:
+    if spf_tree is not None and spf_tree.lookup_count <= _RFC_LOOKUP_LIMIT:
         if not has_mechanism_type(spf_tree, "mx"):
             _spf_nets = []
             for _cidr in extract_spf_ips(spf_tree):

@@ -12,6 +12,7 @@ import sys
 
 import psycopg2
 from celery import Celery
+from celery.exceptions import MaxRetriesExceededError
 from celery.signals import worker_ready
 from datetime import datetime, timezone
 
@@ -297,9 +298,23 @@ def email_intel_analyze(self, job_id: str, domain: str, tenant_id: str):
         if conn:
             try:
                 _update_job(conn, job_id, status=JobStatus.FAILED, error=str(exc)[:500])
-            except Exception:
-                pass
-        raise self.retry(exc=exc, countdown=30)
+            except Exception as db_exc:
+                log.error("[email_intel] could not mark job FAILED in DB: %s", db_exc)
+        try:
+            raise self.retry(exc=exc, countdown=30)
+        except MaxRetriesExceededError:
+            # All retries exhausted — ensure the job is marked FAILED via a fresh connection.
+            log.error("[email_intel] max retries exceeded domain=%s job=%s", domain, job_id)
+            try:
+                fresh_conn = psycopg2.connect(os.environ["DATABASE_URL"])
+                try:
+                    _update_job(fresh_conn, job_id, status=JobStatus.FAILED,
+                                error=f"Max retries exceeded: {exc!s:.400}")
+                finally:
+                    fresh_conn.close()
+            except Exception as final_exc:
+                log.error("[email_intel] final DB update failed: %s", final_exc)
+            raise
     finally:
         if conn:
             conn.close()

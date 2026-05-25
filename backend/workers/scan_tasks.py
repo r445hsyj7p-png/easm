@@ -150,6 +150,7 @@ def run_easm_scan(self, tenant_id: str, scan_config: dict):
     print(f"[Worker] Scan gestartet: tenant={tenant_id}, job={job_id}")
 
     try:
+        _scan_start = time.time()
         # Status: Running
         update_scan_status(job_id, "running", tenant_id)
 
@@ -209,7 +210,7 @@ def run_easm_scan(self, tenant_id: str, scan_config: dict):
             "risk_score": risk_score,
             "findings_count": len(new_findings),
             "new_critical": len(critical_new),
-            "duration_seconds": int(time.time() - time.time())
+            "duration_seconds": int(time.time() - _scan_start)
         })
 
         print(f"[Worker] Scan abgeschlossen: {len(new_findings)} Findings")
