@@ -175,14 +175,36 @@ except ImportError:
     pass
 
 # ─── Email Intelligence router ────────────────────────────────────────────────
+_email_intel_import_error: str | None = None
 try:
     from api.email_intel import router as email_intel_router
     app.include_router(email_intel_router)
-except Exception as _email_import_err:
-    import logging as _log
-    _log.getLogger(__name__).error(
-        "email_intel router NOT registered — import failed: %s", _email_import_err, exc_info=True
+    logger.info("email_intel router registered OK")
+except Exception as _e:
+    import traceback as _tb
+    _email_intel_import_error = f"{type(_e).__name__}: {_e}"
+    logger.error(
+        "email_intel router NOT registered — import failed: %s\n%s",
+        _email_intel_import_error,
+        _tb.format_exc(),
     )
+    # Register a catch-all fallback so callers get 503 (with the real error) instead of 404.
+    @app.api_route(
+        "/api/v1/tenants/{tenant_id}/email-intel/{path:path}",
+        methods=["GET", "POST", "PUT", "DELETE", "PATCH"],
+        include_in_schema=False,
+    )
+    async def _email_intel_unavailable(tenant_id: str, path: str = ""):
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "Email Intelligence Modul konnte nicht geladen werden. "
+                f"Fehler: {_email_intel_import_error}. "
+                "Container neu bauen: "
+                "docker compose build --no-cache api worker-email-intel && "
+                "docker compose up -d api worker-email-intel"
+            ),
+        )
 
 # ─── Docs (gesichert, nur MSSP-Rollen) ───────────────────────────────────────
 
@@ -270,7 +292,12 @@ async def health(db: AsyncSession = Depends(get_db)):
         db_ok = True
     except Exception:
         db_ok = False
-    return {"status": "ok" if db_ok else "degraded", "db": db_ok, "version": "1.0.0"}
+    email_ok = _email_intel_import_error is None
+    status = "ok" if (db_ok and email_ok) else "degraded"
+    resp = {"status": status, "db": db_ok, "version": "1.0.0", "email_intel": email_ok}
+    if not email_ok:
+        resp["email_intel_error"] = _email_intel_import_error
+    return resp
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # TENANT

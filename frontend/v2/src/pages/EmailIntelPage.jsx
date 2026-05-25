@@ -778,6 +778,7 @@ export default function EmailIntelPage() {
   const [bulkMode, setBulkMode]     = useState(false);
   const [bulkText, setBulkText]     = useState("");
   const [analyzeError, setAnalyzeError] = useState(null);
+  const [moduleError, setModuleError]   = useState(null);   // backend module unavailable
   const [bulkAnalyzing, setBulkAnalyzing] = useState(false);
   const [bulkResults, setBulkResults] = useState([]);
   const [now, setNow]               = useState(Date.now());
@@ -794,9 +795,20 @@ export default function EmailIntelPage() {
   const loadDomains = useCallback(async () => {
     try {
       const data = await apiFetch(`${base}/domains`);
+      setModuleError(null);
       setDomains(Array.isArray(data) ? data : []);
       setPage(0);
-    } catch { /* silent */ }
+    } catch (e) {
+      // 503 = module failed to load on backend; 404 = route not registered
+      const msg = e.message || "";
+      const isModuleErr = msg.toLowerCase().includes("nicht verfügbar")
+        || msg.toLowerCase().includes("import")
+        || msg.toLowerCase().includes("modul")
+        || msg.startsWith("503")
+        || msg.startsWith("404");
+      if (isModuleErr) setModuleError(msg);
+      // otherwise stay silent (network blip, not a config problem)
+    }
   }, [base]);
 
   const loadHistory = useCallback(async (domainName) => {
@@ -1187,6 +1199,38 @@ export default function EmailIntelPage() {
 
       {/* ── Main content ──────────────────────────────────────────────────── */}
       <main style={{ flex: 1, overflowY: "auto", display: "flex", flexDirection: "column", gap: 14 }}>
+
+        {/* Module error banner — shown when backend couldn't load email_intel */}
+        {moduleError && (
+          <div style={{
+            background: alpha("var(--sev-critical)", 8),
+            border: `1px solid ${alpha("var(--sev-critical)", 28)}`,
+            borderRadius: 10, padding: "16px 20px",
+            display: "flex", gap: 14, alignItems: "flex-start",
+          }}>
+            <XCircle size={20} color="var(--sev-critical)" style={{ flexShrink: 0, marginTop: 1 }} />
+            <div style={{ flex: 1 }}>
+              <div style={{ fontFamily: T.fontSans, fontSize: 13, fontWeight: 600, color: "var(--sev-critical)", marginBottom: 6 }}>
+                Email Intelligence Modul nicht verfügbar
+              </div>
+              <div style={{ fontFamily: T.fontSans, fontSize: 11, color: T.text2, marginBottom: 10, lineHeight: 1.5 }}>
+                {moduleError}
+              </div>
+              <div style={{
+                background: T.bg2, border: `1px solid ${T.border}`,
+                borderRadius: 6, padding: "8px 12px",
+              }}>
+                <div style={{ fontFamily: T.fontSans, fontSize: 10, fontWeight: 600, color: T.text3, marginBottom: 4 }}>
+                  Container neu bauen (auf dem Server ausführen):
+                </div>
+                <code style={{ fontFamily: T.font, fontSize: 10, color: T.accent, display: "block", lineHeight: 1.8 }}>
+                  docker compose build --no-cache api worker-email-intel<br />
+                  docker compose up -d api worker-email-intel
+                </code>
+              </div>
+            </div>
+          </div>
+        )}
 
         {/* Empty state */}
         {!activeResult && (

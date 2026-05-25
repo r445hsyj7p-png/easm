@@ -58,7 +58,7 @@ x-worker-base: &worker-base
     context: ./backend
     dockerfile: ../docker/Dockerfile.worker
     args:
-      CACHEBUST: "20260523-1"
+      CACHEBUST: "20260525-1"
   image: easm-worker:latest
   environment:
     <<: *env
@@ -130,7 +130,7 @@ services:
       context: ./backend
       dockerfile: ../docker/Dockerfile.api
       args:
-        CACHEBUST: "20260523-1"
+        CACHEBUST: "20260525-1"
     image: easm-api:latest
     environment:
       <<: *env
